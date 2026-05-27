@@ -2,9 +2,6 @@
 
 这是一个面向智谱 GLM Coding Plan 的抢购辅助项目，包含 Tampermonkey 油猴脚本和本地 CPU/GPU OCR 后端，用于限时抢购流程辅助、中文点选验证码自动识别、验证码自动点击、套餐按钮提前可点、限流重试和多窗口监控。目前仅适配google chrome和edge浏览器，推荐使用chrome。
 
-
-默认使用作者内置折扣入口，可获得 95 折优惠；介意者可在脚本中自行替换入口参数。
-
 关键词：GLM Coding Rush、GLM Coding Plan 抢购助手、GLM Coding Plan 抢购脚本、GLM Coding Plan 一键抢购、智谱 GLM Coding 抢购、智谱编程套餐抢购、GLM Coding 油猴脚本、Tampermonkey userscript、Auto-Purchase Userscript、自动解锁售罄、限流重试、多窗口并发、本地 OCR、CPU OCR、GPU OCR、中文点选验证码、验证码自动点击、订阅助手。
 
 English keywords: GLM Coding Rush, GLM Coding Plan auto purchase, GLM Coding Plan rush helper, GLM Coding userscript, Tampermonkey script, local OCR captcha solver, CPU OCR backend, GPU OCR backend, Chinese captcha auto click.
@@ -88,7 +85,7 @@ http://127.0.0.1:8888
 
 2、安装后端，到 github 目录根据引导手动安装或者根据 skill 让 ai 助手安装
 
-3、打开抢购网址测试看工作是不是正常
+3、打开抢购网址测试看工作是不是正常 推荐由此进入：👉 95 折优惠链接：https://www.bigmodel.cn/glm-coding?ic=9GXWL9KCGZ
 
 4、每天9点50分前进入抢购页面准备，晚了可能就打不开了，顺便准备好手机支付宝准备付款（我曾经有金额但是付晚了就没了）
 
@@ -168,7 +165,7 @@ docs/captcha_model_journey.md
 先刷新一下浏览器页面，再重新打开验证码测试。验证码弹窗刷新、页面状态缓存、
 多窗口切换或浏览器缩放状态异常时，前端显示和后端截图可能短暂不同步。
 
-### 推荐从哪里进入？
+### 优惠活动从哪里进入？
 
 推荐使用这个链接进入：
 
