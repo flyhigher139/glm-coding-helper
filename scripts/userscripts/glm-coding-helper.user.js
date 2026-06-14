@@ -556,7 +556,7 @@
     });
     // ── v8.0: 一键多开窗口函数 ────────────────────────────────────────────────
     function openMultipleWindows() {
-        const count = prompt('请输入要打开的窗口数量（建议 2-5 个）:', '3');
+        const count = prompt('请输入要打开的窗口数量（默认 2，上限 10；窗口越多越容易撞 RPM 风控，按需选择）:', '2');
         if (!count) return;
         const n = parseInt(count);
         if (isNaN(n) || n < 1 || n > 10) { alert('请输入 1-10 之间的数字'); return; }
@@ -567,7 +567,7 @@
                 GM_openInTab(url, { active: false, insert: true, setParent: true });
             }, i * 300);
         }
-        alert(`✅ 已打开 ${n} 个标签页！\n\n多窗口抢购流程：\n1. 每个窗口自动解验证码（不点确定）\n2. 等待到 10:00:00 + 错开时间\n3. 自动点击确认发送请求\n\n💡 窗口0最先点，之后每个错开2秒`);
+        alert(`✅ 已打开 ${n} 个标签页！\n\n多窗口抢购流程：\n1. 每个窗口自动解验证码（不点确定）\n2. 等待到 10:00:00 + 错开时间\n3. 自动点击确认发送请求\n\n💡 窗口0最先点，之后每个错开2秒\n⚠️ 默认推荐 2 个窗口，单窗口单发是当前最稳的策略，多窗口会按窗口数放大请求数量，直接撞 RPM 上限`);
     }
     // ── 扫描队列（过滤今日已确认售罄）────────────────────────────────────────
     const tabs      = String(CFG.TABS_PRIORITY).split(',').map(Number).filter(Boolean);
