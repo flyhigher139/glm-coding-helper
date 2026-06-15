@@ -37,6 +37,10 @@
   - 所有延迟都自动加 ±20% 随机抖动，经典和高级都有，避免 RPM 风控识别
   - 限流重试时新引入 `WAITING_RL` 中间态，避免等待期间空跑导致重复点
 - v8.21.1：黄金时间（9:30-11:00）首次进入时弹紫色条提示用户**试试无痕窗口**（`Ctrl+Shift+N`），消除隐形风控标记。`sessionStorage` 去重，同一标签页每天只弹一次。
+- v8.21.2：**紧急修复死循环发验证码**。
+  - v8.21 的 `jitterDelay()` 顶层 `function` 在某些浏览器/Tampermonkey 缓存场景下闭包内报 `ReferenceError: jitterDelay is not defined`，导致 `handleCaptchaDirectInPage` 抛异常 → `captchaSent = false` → `setInterval(checkCaptchaPrompt, 50)` 每 50ms 重发一次验证码
+  - **inline 抖动逻辑到调用点**，去掉 helper 依赖。同时给数字字段加了 `Number(...) || 默认值` 兜底，防止配置污染产生 NaN 导致 `setTimeout(NaN)` 立即触发
+  - 现象：`ReferenceError: jitterDelay is not defined` + captcha 弹窗上一个 marker 被反复点到 `(-9992,-10029)` 这种坏坐标
 
 ## 2026-06-06
 
