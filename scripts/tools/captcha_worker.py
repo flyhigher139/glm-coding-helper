@@ -41,11 +41,15 @@ DETECTOR_PATH = Path(os.environ.get("CNCAPTCHA_DETECTOR_PATH", str(_DEFAULT_DETE
 if not DETECTOR_PATH.exists() and _LEGACY_DETECTOR_PATH.exists():
     DETECTOR_PATH = _LEGACY_DETECTOR_PATH
 OCR_MODE = os.environ.get("CNCAPTCHA_OCR_MODE", "auto").lower()
+# Platform-aware venv Python path: venvs use "Scripts/python.exe" on Windows
+# and "bin/python" on POSIX (macOS, Linux).
+_OCR_BIN = "Scripts" if os.name == "nt" else "bin"
+_OCR_PY = "python.exe" if os.name == "nt" else "python"
 if OCR_MODE in {"cpu", "cpu_parallel", "cpu-pool"}:
     OCR_PYTHON = Path(
         os.environ.get(
             "CNCAPTCHA_CPU_OCR_PYTHON",
-            str(ROOT / ".venv_paddle" / "Scripts" / "python.exe"),
+            str(ROOT / ".venv_paddle" / _OCR_BIN / _OCR_PY),
         )
     )
     OCR_WORKER = ROOT / "scripts" / "tools" / "ppocr_cpu_pool_worker.py"
@@ -54,7 +58,7 @@ else:
     OCR_PYTHON = Path(
         os.environ.get(
             "CNCAPTCHA_GPU_OCR_PYTHON",
-            str(ROOT / ".venv_paddle_gpu" / "Scripts" / "python.exe"),
+            str(ROOT / ".venv_paddle_gpu" / _OCR_BIN / _OCR_PY),
         )
     )
     OCR_WORKER = ROOT / "scripts" / "tools" / "ppocr_gpu_worker.py"

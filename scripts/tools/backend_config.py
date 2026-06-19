@@ -79,7 +79,9 @@ def _gpu_probe_env() -> dict[str, str]:
     paddle_home = ROOT / ".paddle_home_gpu"
     paddlex_cache = ROOT / ".paddlex_cache_gpu"
     env["HOME"] = str(paddle_home)
-    env["USERPROFILE"] = str(paddle_home)
+    # USERPROFILE is a Windows-only env var; harmless but noisy on POSIX.
+    if os.name == "nt":
+        env["USERPROFILE"] = str(paddle_home)
     env["PADDLE_HOME"] = str(paddle_home / ".cache" / "paddle")
     env["PADDLE_PDX_CACHE_HOME"] = str(paddlex_cache)
     env.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")

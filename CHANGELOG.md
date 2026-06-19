@@ -1,5 +1,33 @@
 # 修复历史
 
+## 2026-06-19
+
+- **macOS 支持（Apple Silicon + Intel）**
+  - 油猴脚本本身跨平台，本质改动都在 Python 后端。
+  - 8 个 Python 文件加入 `os.name` / `sys.platform` 守卫，修复所有 Windows 硬编码：
+    - `scripts/tools/captcha_worker.py` — `OCR_PYTHON` 默认值按平台区分 `Scripts/python.exe` / `bin/python`（这是 **唯一会让 Mac 直接崩溃** 的硬编码）
+    - `scripts/tools/backend_config.py` / `scripts/tools/ppocr_cpu_pool_worker.py` / `scripts/tools/ppocr_gpu_worker.py` — `USERPROFILE` 守卫到 Windows（Mac 上是噪声，不是 bug）
+    - `scripts/monitor/window_helper.py` — 非 Windows 平台抛 `ImportError`（替代原本的 `AttributeError` 崩溃路径）
+    - `scripts/tools/captcha_server.py` — `capture_browser_window is None` 时显式早返回，给出"请用 `/captcha_direct`"提示
+    - `scripts/setup_backend.py` — Mac 自动选 `requirements-backend-mac.txt`；GPU smoke test 守卫到 Windows；启动提示用 `Path` 拼接路径
+    - `scripts/tools/evaluate_pipeline_compare.py` — `WINDIR` / venv 路径按平台区分
+    - `scripts/tools/ppocr_gpu_worker.py` — NVIDIA DLL `;` PATH 注入守卫到 Windows（POSIX 走 RPATH/LC_LOAD_LIBRARY）
+  - 新增 `setup-mac.sh` / `start-backend-pipeline-gui.sh` / `start-backend-headless.sh` 三个 Mac 启动脚本（参考 Windows `.cmd` / `.ps1` 行为）
+  - 新增 `requirements-backend-mac.txt`，移除了 `pydirectinput`（Windows-only）和 `mss`（Mac 上用不到）
+  - 新增 `docs/mac_install.md` 详细 Mac 安装说明、限制、故障排除
+- **已放弃的功能（Mac 上不可用）**
+  - **GPU 加速** — PaddlePaddle 官方没有 Apple MPS/Metal 实现，Mac 上只能跑 CPU
+  - **浏览器截屏流程**（`/captcha` + `trigger_auto_capture`）— Win32 API `EnumWindows` / `ImageGrab` 在 Mac 上不存在
+  - **`pydirectinput`** — 已从 `requirements-backend-mac.txt` 移除（油猴脚本点击走 DOM `element.click()`，不依赖此包）
+- **M1 实测性能**
+  - YOLO 推理：~25ms/次
+  - PP-OCRv5_mobile_rec 识别：~600ms/裁剪
+  - 端到端：~2–3s/次
+  - 7 workers（2 YOLO + 5 OCR）全部 alive，`/health` 返回 `{"status":"ok",...}`
+- **新增说明文档**
+  - `docs/mac_install.md` — 用户面向的 Mac 安装/限制/故障排除
+  - `docs/mac_port_notes.md` — 维护者面向的技术变更清单（哪些文件改了哪行、为什么）
+
 ## 2026-06-15
 
 - 发布用户脚本 v8.19：黄金时间从 9:30-10:10 延长到 9:30-11:00，覆盖中午还在补货的窗口（用户反馈 10:30 之后仍有成功下单）。

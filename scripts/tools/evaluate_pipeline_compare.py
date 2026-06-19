@@ -62,7 +62,14 @@ def points_ok(pred: list[dict], gt: list[dict], threshold: float) -> tuple[bool,
 
 
 def scan_windows_fonts() -> list[tuple[str, int]]:
-    font_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    if os.name == "nt":
+        font_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    else:
+        # On macOS / Linux, MS fonts are not available; fall back to
+        # /Library/Fonts. Most font lookups below will simply return None
+        # for these filenames on a non-Windows host, which is fine — this
+        # is a dev/eval tool.
+        font_dir = Path("/Library/Fonts")
     names = [
         "simsun.ttc",
         "simhei.ttf",
@@ -116,7 +123,9 @@ def start_our_worker(mode: str) -> subprocess.Popen:
     env["PYTHONUTF8"] = "1"
     env["CNCAPTCHA_OCR_MODE"] = mode
     env.setdefault("CNCAPTCHA_YOLO_DEVICE", "cpu")
-    py = ROOT / ".venv_paddle" / "Scripts" / "python.exe"
+    _py_bin = "Scripts" if os.name == "nt" else "bin"
+    _py_exe = "python.exe" if os.name == "nt" else "python"
+    py = ROOT / ".venv_paddle" / _py_bin / _py_exe
     if not py.exists():
         py = Path(sys.executable)
     return subprocess.Popen(

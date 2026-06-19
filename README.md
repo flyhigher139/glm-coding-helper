@@ -2,6 +2,8 @@
 
 这是一个面向智谱 GLM Coding Plan 的抢购辅助项目，包含 Tampermonkey 油猴脚本和本地 CPU/GPU OCR 后端，用于限时抢购流程辅助、一键启动后端、中文点选验证码自动识别、验证码自动点击、套餐按钮提前可点、限流重试和多窗口监控。目前仅适配 Google Chrome 和 Microsoft Edge，推荐使用 Chrome。
 
+> **平台支持**：油猴脚本本身跨平台（Chrome / Edge / Safari / Firefox + Tampermonkey / Userscripts）。Python 后端原本只支持 Windows + NVIDIA GPU，**2026-06-19 起支持 macOS（Apple Silicon / Intel）CPU 模式** —— 详见 [`docs/mac_install.md`](docs/mac_install.md)。
+
 关键词：GLM Coding Rush、GLM Coding Plan 抢购助手、GLM Coding Plan 抢购脚本、GLM Coding Plan 一键抢购、GLM Coding 一键启动、智谱 GLM Coding 抢购、智谱编程套餐抢购、GLM Coding 油猴脚本、Tampermonkey userscript、Auto-Purchase Userscript、自动解锁售罄、限流重试、多窗口并发、本地 OCR、CPU OCR、GPU OCR、中文点选验证码、验证码自动点击、订阅助手。
 
 English keywords: GLM Coding Rush, GLM Coding Plan auto purchase, GLM Coding Plan rush helper, GLM Coding one-click startup, GLM Coding userscript, Tampermonkey script, local OCR captcha solver, CPU OCR backend, GPU OCR backend, Chinese captcha auto click.
@@ -28,6 +30,18 @@ https://github.com/user-attachments/assets/e1a56d07-5c4d-4aa1-a567-909dd25bd037
 
 ```text
 docs/backend_config.md
+```
+
+macOS（Apple Silicon / Intel）安装与已知限制见：
+
+```text
+docs/mac_install.md
+```
+
+macOS 移植的技术变更清单（给维护者看）见：
+
+```text
+docs/mac_port_notes.md
 ```
 
 修复历史见：
@@ -110,6 +124,12 @@ Greasy Fork 和仓库根目录的 `glm-coding-helper.user.js` 都是给普通用
 ```text
 start-backend-pipeline-gui.cmd
 ```
+
+> **macOS 用户**：把上面这步换成
+> ```bash
+> ./start-backend-pipeline-gui.sh
+> ```
+> 首次运行先 `./setup-mac.sh` 装依赖。详细说明见 [`docs/mac_install.md`](docs/mac_install.md)。
 
 首次使用如果环境没装好，会弹 PowerShell 提示，按提示输入 `1` 让它自动 `pip install`，或者先双击 `one-click-start.cmd` 装好环境再启动。
 

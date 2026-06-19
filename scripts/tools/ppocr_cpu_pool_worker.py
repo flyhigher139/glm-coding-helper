@@ -29,7 +29,9 @@ CONSTRAINED_DECODE = os.environ.get("CNCAPTCHA_CPU_OCR_CONSTRAINED", "1").lower(
 def configure_env() -> None:
     paddle_home = ROOT / ".paddle_home"
     os.environ["HOME"] = str(paddle_home)
-    os.environ["USERPROFILE"] = str(paddle_home)
+    # USERPROFILE is Windows-only; harmless but noisy on POSIX.
+    if os.name == "nt":
+        os.environ["USERPROFILE"] = str(paddle_home)
     os.environ["PADDLE_HOME"] = str(paddle_home / ".cache" / "paddle")
     os.environ["PADDLE_PDX_CACHE_HOME"] = str(ROOT / CACHE_NAME)
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")

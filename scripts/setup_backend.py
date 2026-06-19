@@ -11,7 +11,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CPU_VENV = ROOT / ".venv_paddle"
 GPU_VENV = ROOT / ".venv_paddle_gpu"
-CPU_REQ = ROOT / "requirements-backend-cpu.txt"
+# On macOS prefer the trimmed requirements file (no pydirectinput / mss).
+# Falls back to the CPU file on other POSIX systems (Linux) and Windows.
+if sys.platform == "darwin" and (ROOT / "requirements-backend-mac.txt").exists():
+    CPU_REQ = ROOT / "requirements-backend-mac.txt"
+else:
+    CPU_REQ = ROOT / "requirements-backend-cpu.txt"
 GPU_REQ = ROOT / "requirements-backend-gpu.txt"
 YOLO_WEIGHT = ROOT / "models" / "weights" / "yolo-captcha-detector.pt"
 
@@ -72,26 +77,34 @@ def smoke_test(py: Path, mode: str) -> None:
     )
     run([str(py), "-c", extra_code])
     if mode == "gpu":
-        gpu_code = (
-            "import paddle; "
-            "print('cuda_compiled=', paddle.is_compiled_with_cuda()); "
-            "print('cuda_count=', paddle.device.cuda.device_count() if paddle.is_compiled_with_cuda() else 0)"
-        )
-        run([str(py), "-c", gpu_code])
-        gpu_ocr_code = (
-            "import os; "
-            f"os.environ['HOME'] = {str(ROOT / '.paddle_home_gpu')!r}; "
-            f"os.environ['USERPROFILE'] = {str(ROOT / '.paddle_home_gpu')!r}; "
-            f"os.environ['PADDLE_HOME'] = {str(ROOT / '.paddle_home_gpu' / '.cache' / 'paddle')!r}; "
-            f"os.environ['PADDLE_PDX_CACHE_HOME'] = {str(ROOT / '.paddlex_cache_gpu')!r}; "
-            "os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True'); "
-            "from paddleocr import TextRecognition; "
-            "r = TextRecognition(model_name='PP-OCRv5_server_rec', device='gpu:0', engine='paddle_dynamic'); "
-            "close = getattr(r, 'close', None); "
-            "close() if callable(close) else None; "
-            "print('gpu ocr ok')"
-        )
-        run([str(py), "-c", gpu_ocr_code])
+        # GPU smoke test is Windows / NVIDIA-only. On POSIX without NVIDIA
+        # drivers we still run the import check but skip the CUDA probe.
+        if os.name == "nt":
+            gpu_code = (
+                "import paddle; "
+                "print('cuda_compiled=', paddle.is_compiled_with_cuda()); "
+                "print('cuda_count=', paddle.device.cuda.device_count() if paddle.is_compiled_with_cuda() else 0)"
+            )
+            run([str(py), "-c", gpu_code])
+            gpu_ocr_code = (
+                "import os; "
+                f"os.environ['HOME'] = {str(ROOT / '.paddle_home_gpu')!r}; "
+                f"os.environ['USERPROFILE'] = {str(ROOT / '.paddle_home_gpu')!r}; "
+                f"os.environ['PADDLE_HOME'] = {str(ROOT / '.paddle_home_gpu' / '.cache' / 'paddle')!r}; "
+                f"os.environ['PADDLE_PDX_CACHE_HOME'] = {str(ROOT / '.paddlex_cache_gpu')!r}; "
+                "os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True'); "
+                "from paddleocr import TextRecognition; "
+                "r = TextRecognition(model_name='PP-OCRv5_server_rec', device='gpu:0', engine='paddle_dynamic'); "
+                "close = getattr(r, 'close', None); "
+                "close() if callable(close) else None; "
+                "print('gpu ocr ok')"
+            )
+            run([str(py), "-c", gpu_ocr_code])
+        else:
+            print(
+                "GPU smoke test skipped on POSIX (no NVIDIA driver assumed).",
+                flush=True,
+            )
 
 
 def check_assets() -> None:
@@ -142,10 +155,11 @@ def main(argv: list[str] | None = None) -> int:
     check_assets()
 
     print("\nDone.", flush=True)
+    start_gui = ROOT / "scripts" / "tools" / "start_backend.py"
     print("Start GUI backend:", flush=True)
-    print("  python scripts\\tools\\start_backend.py --mode auto", flush=True)
+    print(f"  python {start_gui} --mode auto", flush=True)
     print("Start headless backend:", flush=True)
-    print("  python scripts\\tools\\start_backend.py --headless --mode auto", flush=True)
+    print(f"  python {start_gui} --headless --mode auto", flush=True)
     return 0
 
 

@@ -36,22 +36,27 @@ def configure_env() -> None:
     paddle_home = ROOT / ".paddle_home_gpu"
     paddlex_cache = ROOT / ".paddlex_cache_gpu"
     os.environ["HOME"] = str(paddle_home)
-    os.environ["USERPROFILE"] = str(paddle_home)
+    # USERPROFILE is Windows-only; harmless but noisy on POSIX.
+    if os.name == "nt":
+        os.environ["USERPROFILE"] = str(paddle_home)
     os.environ["PADDLE_HOME"] = str(paddle_home / ".cache" / "paddle")
     os.environ["PADDLE_PDX_CACHE_HOME"] = str(paddlex_cache)
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
-    for site_dir in site.getsitepackages():
-        nvidia_dir = Path(site_dir) / "nvidia"
-        dll_dirs = [
-            nvidia_dir / "cudnn" / "bin",
-            nvidia_dir / "cublas" / "bin",
-            nvidia_dir / "cuda_nvrtc" / "bin",
-            nvidia_dir / "cuda_runtime" / "bin",
-        ]
-        existing = [str(path) for path in dll_dirs if path.exists()]
-        if existing:
-            os.environ["PATH"] = ";".join(existing + [os.environ.get("PATH", "")])
+    # NVIDIA DLL PATH injection is Windows-only. On POSIX, nvidia wheels
+    # are loaded via RPATH / LC_LOAD_LIBRARY so no PATH patching is needed.
+    if os.name == "nt":
+        for site_dir in site.getsitepackages():
+            nvidia_dir = Path(site_dir) / "nvidia"
+            dll_dirs = [
+                nvidia_dir / "cudnn" / "bin",
+                nvidia_dir / "cublas" / "bin",
+                nvidia_dir / "cuda_nvrtc" / "bin",
+                nvidia_dir / "cuda_runtime" / "bin",
+            ]
+            existing = [str(path) for path in dll_dirs if path.exists()]
+            if existing:
+                os.environ["PATH"] = ";".join(existing + [os.environ.get("PATH", "")])
 
 
 def first_cjk(text: str) -> str:

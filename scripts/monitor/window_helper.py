@@ -1,3 +1,16 @@
+import sys
+
+# window_helper is a thin Win32 wrapper (ctypes.windll.* + PIL.ImageGrab).
+# Bail out cleanly on macOS / Linux so the captcha_server's try/except
+# ImportError can set capture_browser_window = None without raising
+# AttributeError halfway through import.
+if sys.platform != "win32":
+    raise ImportError(
+        "window_helper is Windows-only. On macOS / Linux use the "
+        "/captcha_direct endpoint with a base64 image from the "
+        "Tampermonkey userscript."
+    )
+
 import ctypes
 from ctypes import wintypes
 import time

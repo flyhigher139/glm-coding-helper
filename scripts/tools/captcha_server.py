@@ -308,8 +308,20 @@ def trigger_auto_capture(chars_text: str, request_ts: int, browser_hint=None):
             if state.latest_request_ts != my_id:
                 return
             if not capture_browser_window:
-                time.sleep(0.08)
-                continue
+                # window_helper is Windows-only. On macOS / Linux the user
+                # must use the /captcha_direct flow with a base64 image
+                # coming from the userscript. Fail fast with a clear
+                # message instead of looping 5x80ms and returning "timeout".
+                state.status = "截屏不可用"
+                log_to_gui("ERR: 此平台不支持自动截屏，请使用 /captcha_direct 接口")
+                state.recognition_results[str(request_ts)] = {
+                    "result": {
+                        "success": False,
+                        "error": "screen capture unavailable on this OS",
+                    },
+                    "timestamp": datetime.now().isoformat(),
+                }
+                return
             browser_hint = browser_hint or {}
             selected_title = (
                 browser_hint.get("title")
