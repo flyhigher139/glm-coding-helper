@@ -573,6 +573,10 @@ def run_gui():
     lbl_status = ttk.Label(main_frame, text="准备就绪", style="Status.TLabel")
     lbl_status.grid(row=row, column=1, sticky=tk.W, pady=2); row += 1
 
+    ttk.Label(main_frame, text="识别模型:").grid(row=row, column=0, sticky=tk.W, pady=2)
+    lbl_model = ttk.Label(main_frame, text="加载中…")
+    lbl_model.grid(row=row, column=1, sticky=tk.W, pady=2); row += 1
+
     ttk.Label(main_frame, text="当前提示:").grid(row=row, column=0, sticky=tk.W, pady=2)
     lbl_prompt = ttk.Label(main_frame, text="无")
     lbl_prompt.grid(row=row, column=1, sticky=tk.W, pady=2); row += 1
@@ -590,6 +594,19 @@ def run_gui():
 
     def update_gui():
         try:
+            # 模型行：显示当前 OCR 模式 + 主/兜底模型（每次更新，配置可能在启动后才 resolve）
+            try:
+                cfg = BACKEND_CONFIG.to_dict() if BACKEND_CONFIG else {}
+                mode = cfg.get("cpu_model", "?")
+                if mode == "hybrid":
+                    model_txt = f"hybrid | 主 {cfg.get('cpu_fast_model','?')} → 兜底 {cfg.get('cpu_fallback_model','?')}"
+                elif cfg.get("gpu_available"):
+                    model_txt = f"GPU {cfg.get('gpu_model','?')}"
+                else:
+                    model_txt = f"CPU {mode}"
+                lbl_model.config(text=model_txt)
+            except Exception:
+                pass
             if state.gui_update_needed:
                 lbl_status.config(text=state.status)
                 lbl_prompt.config(text=state.last_prompt)
