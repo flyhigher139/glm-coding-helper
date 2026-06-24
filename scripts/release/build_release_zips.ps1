@@ -75,6 +75,7 @@ $CommonItems = @(
     "scripts\userscripts\glm-coding-captcha-direct.user.js",
     "one-click-start.cmd",
     "one-click-start.command",
+    "one-click-start.sh",
     "start-backend-pipeline-gui.command",
     "README.md",
     "CHANGELOG.md",
@@ -102,20 +103,29 @@ $OnlineGuide = @"
 GLM Coding Helper online installer package
 
 Recommended:
-1. Extract this package to a short path, for example C:\glm-coding-helper.
+1. Extract this package to a short path, for example C:\glm-coding-helper or ~/glm-coding-helper.
 2. Install or update Tampermonkey script from glm-coding-helper.user.js.
-3. Double-click one-click-start.cmd.
-4. It will install CPU/GPU backend dependencies automatically when missing, then start the backend.
+3. Start the backend:
+   - Windows: double-click one-click-start.cmd
+   - macOS: chmod +x one-click-start.command && ./one-click-start.command
+   - Linux: chmod +x one-click-start.sh && ./one-click-start.sh
+4. Missing CPU/GPU backend dependencies are installed automatically on first run.
 
 Important:
 - Avoid very deep extract paths. Some backend dependencies contain long internal paths.
 - If pip reports "No such file or directory" during install, move the folder to a short path like C:\glm-coding-helper and retry.
 
 Manual:
-- one-click-start.cmd installs the CPU backend environment on first run.
+- one-click-start.cmd installs the CPU/GPU backend environment on first run.
 - start-backend-pipeline-gui.cmd launches the pipeline backend with a Tk GUI window.
 - scripts\start_backend.ps1 starts the backend after environment exists.
 - macOS: run chmod +x one-click-start.command start-backend-pipeline-gui.command scripts/setup_backend_macos.sh if Finder blocks the scripts, then double-click one-click-start.command for first setup.
+- Linux: extract to a normal folder, then run:
+    chmod +x one-click-start.sh scripts/setup_backend_linux.sh
+    ./one-click-start.sh
+  First run auto-detects PyPI mirrors (China mirrors first), creates .venv_paddle / .venv_paddle_gpu as needed, and starts the headless captcha_server backend (start_backend.py --headless) on http://127.0.0.1:8888 .
+  Requires Python 3.12 or uv; NVIDIA GPU is optional (auto mode tries GPU first, then falls back to CPU).
+  Full guide: docs/linux-setup.md
 "@
 Set-Content -LiteralPath (Join-Path $OnlineDir "ONLINE_INSTALLER_README.txt") -Value $OnlineGuide -Encoding UTF8
 New-Zip -PackageDir $OnlineDir -ZipPath (Join-Path $OutRoot "$OnlineName.zip")

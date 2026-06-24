@@ -1,6 +1,6 @@
 #!/bin/bash
 # GLM Coding Helper 一键启动（Linux）
-# 用途：首次安装 CPU/GPU 后端环境并启动 pipeline 后端（headless）。
+# 用途：首次安装 CPU/GPU 后端环境并启动 headless captcha_server 后端（start_backend.py --headless）。
 #
 # 命令行运行：./one-click-start.sh
 #

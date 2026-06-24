@@ -41,6 +41,7 @@ $Include = @(
     "scripts\userscripts\glm-coding-captcha-direct.user.js",
     "one-click-start.cmd",
     "one-click-start.command",
+    "one-click-start.sh",
     "start-backend-pipeline-gui.command",
     "README.md",
     "CHANGELOG.md",
@@ -92,6 +93,11 @@ GLM Coding Helper portable CPU package
 macOS:
 1. Run chmod +x one-click-start.command start-backend-pipeline-gui.command scripts/setup_backend_macos.sh if Finder blocks the scripts.
 2. Double-click one-click-start.command on first run, then use start-backend-pipeline-gui.command.
+
+Linux:
+1. This portable package is built for Windows CPU usage. Linux users should prefer glm-coding-helper-online-installer-*.zip.
+2. If you use this zip on Linux anyway: chmod +x one-click-start.sh scripts/setup_backend_linux.sh && ./one-click-start.sh
+3. See docs/linux-setup.md for Python 3.12 / uv / NVIDIA GPU requirements.
 
 This package includes local model/cache files, but it does not ship a copied Windows venv.
 Copied venvs are not portable and may point at the packager's Python path.
