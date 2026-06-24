@@ -339,6 +339,35 @@ docs/captcha_model_journey.md
 
 👉 https://www.bigmodel.cn/glm-coding
 
+### GPU 版不支持 RTX 50 系？
+
+RTX 50 系（Blackwell 架构，如 5070/5080/5090）**暂时不支持 GPU 模式**。原因：
+
+- GPU 依赖 `paddlepaddle-gpu` + `nvidia-*-cu11`（CUDA 11.8）+ `cudnn 8.9`
+- RTX 50 系**最低需要 CUDA 12.8 + cuDNN 9.x**，CUDA 11.8 不含 Blackwell 的 PTX，GPU 推理会失败或回退 CPU
+
+**解决方案**：RTX 50 系用户用 CPU 模式即可（`one-click-start.cmd` 会自动选 CPU），PP-OCRv6 在 CPU 上约 110ms/张，完全够用。等 `paddlepaddle-gpu` 发布支持 CUDA 12.8 的版本后会更新。
+
+### GPU 模式报错 / GPU 没用上？
+
+确认以下几点：
+
+1. `.venv_paddle_gpu` 里装的是 **GPU 版 `paddlepaddle-gpu`**（不是 CPU 版 `paddlepaddle`）
+2. `.venv_paddle_gpu` 里的 **`torch` 也是 GPU 版**（`torch.cuda.is_available()` 返回 `True`）。YOLO/Ultralytics 依赖 `torch`；如果 `torch` 是 CPU 版，YOLO 会走 CPU 即使 paddle 是 GPU 版
+3. 显卡驱动版本要 **匹配 CUDA 版本**（当前项目用 CUDA 11.8）
+
+检查命令：
+
+```powershell
+.\.venv_paddle_gpu\Scripts\python.exe -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no cuda')"
+```
+
+如果输出 `False` 或 `no cuda`，请按 [PyTorch 官网](https://pytorch.org/get-started/locally/) 选择 CUDA 版本重新安装 GPU 版 `torch`。
+
+### CPU 模式识别速度慢？
+
+如果识别一张验证码超过 2 秒，确认下载的是**最新版 Release 包**。旧版本（2026-06-22 之前）使用 PP-OCRv5 server（约 1189ms/张），新版本升级到 PP-OCRv6 tiny（约 110ms/张，快约 11 倍）。379 张真实验证码测试准确率仍为 100%。
+
 ## 致谢
 
 本项目的油猴前端脚本是在 Greasy Fork 用户 `mumumi` 的《GLM Coding Plan抢购助手》基础上二次开发而来：
