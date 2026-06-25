@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      23.8
+// @version      23.9
 // @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR（PP-OCRv6）自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护。订阅入口被风控拦截时手动点「特惠订阅」即可，验证码自动打。
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -994,9 +994,13 @@
     }
     // ── v8.9: 弹窗关闭决策（三态返回）────────────────────────────────────────
     // 返回: 'close' → 关弹窗试下一个 | 'keep' → 不关 | 'warn' → 异常，告知用户
+    // 无金额无效页兜底：GLM 有时先显示无金额/没抢到，过 ~1 秒才弹出真金额订单（#16/#40），
+    // 所以无金额不能立刻关，要持续无金额超过 1.7s 才判无效页关闭。
+    let noPriceSince = 0;
+    const NO_PRICE_GRACE_MS = 1700;
     function checkPayDialog() {
         const dlg = getPayDialog();
-        if (!dlg) return 'keep';
+        if (!dlg) { noPriceSince = 0; return 'keep'; }
         if (window.__glmRushConfirmed) {
             window.__glmRushDialogSeen = 1;
             return 'keep';
@@ -1020,7 +1024,21 @@
         }
         // ── 情况 D：接口没说售罄/繁忙，但弹窗里出现小飞机 → 异常不一致
         if (hasAirplaneInDialog()) return 'warn';
-        // ── 情况 C：接口成功 + 有价格 → 不关
+        // ── 情况 C：接口成功/其它 → 看弹窗实际有没有金额
+        const prices = readDialogPrices();
+        if (prices?.any) {
+            // 有有效金额（真支付页），清掉无金额计时，保留弹窗等用户支付。
+            noPriceSince = 0;
+            return 'keep';
+        }
+        // 无金额（疑似无效支付页）。GLM 有时会延迟 ~1s 才渲染出真金额订单，
+        // 不能立刻关——持续无金额超过宽限期才判无效页关闭。
+        if (!noPriceSince) noPriceSince = Date.now();
+        if (Date.now() - noPriceSince >= NO_PRICE_GRACE_MS) {
+            console.log('[GLM v8.9] 无金额持续 ' + (Date.now() - noPriceSince) + 'ms，判定为无效支付页');
+            return 'close';
+        }
+        console.log('[GLM v8.9] 弹窗暂无金额，宽限等待 ' + (Date.now() - noPriceSince) + '/' + NO_PRICE_GRACE_MS + 'ms');
         return 'keep';
     }
     // ── 底部状态栏 ────────────────────────────────────────────────────────────
