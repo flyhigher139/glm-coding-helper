@@ -1,5 +1,13 @@
 # 修复历史
 
+## 2026-06-26
+
+- 合并 PR #37（macOS 启动前校验后端 OCR 环境）：`one-click-start.command` 和 `start-backend-pipeline-gui.command` 启动时改为调用新增的 `scripts/check_backend_env.py`，除了 import 依赖，还会校验 `paddleocr/paddlex>=3.7.0` 版本下限，并验证默认 OCR 模型（`PP-OCRv6_tiny_rec`）在 `default_registry` 已注册，避免「能 import 但模型加载失败」被漏判而启动报错。`setup_backend_macos.sh` 安装末尾追加一次真实 `TextRecognition` 加载验证。
+- 合并 PR #36（首请求冷启动优化 + Chrome LNA 绕过 + 验证码熔断）：
+  - 后端启动时跑一次真推理预热 OCR 模型，避免首个验证码请求因 JIT 冷启动超时。
+  - 用户脚本绕开 Chrome 130+ 的 Local Network Access（LNA）拦截：改用 `GM_xmlhttpRequest` 优先于 `fetch` 访问本地后端，不再依赖每次都要用户手动放行的 LNA 提示。
+  - 验证码识别增加熔断：单张失败冷却 1.5s，连续 3 次失败停止，防止点字与识别之间的死循环自激振荡导致干等到超时。
+
 ## 2026-06-24
 
 - 发布用户脚本 v23.6：识别「抢购人数过多，请刷新再试」按钮状态为不可点击。之前 `canBuy` 只拦截「售罄/补货/暂时」，按钮显示「抢购人数过多」「刷新再试」「请稍后」时仍会误判可点击并尝试点击，浪费请求。现在这些文字都加入拦截正则，看到就跳过继续等，不浪费点击。（#32）
