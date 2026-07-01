@@ -193,19 +193,31 @@ def run_ocr_worker_direct(core_id: int, req_queue, res_queue, ready_queue):
     configure_env()
     from paddleocr import TextRecognition
 
+    # PP-OCRv6 may not be registered in older paddleocr installs (e.g. Mac
+    # .venv_paddle from before v6 support was added). Fall back to v5 if v6
+    # fails to load so macOS users can still run with their existing venv.
+    actual_model = MODEL_NAME
     try:
-        recognizer = TextRecognition(model_name=MODEL_NAME, device="cpu", engine=ENGINE)
-        # ── 预缓存：预热 OCR 模型（首次推理触发 JIT 编译 + 模型缓存）────
+        recognizer = TextRecognition(model_name=actual_model, device="cpu", engine=ENGINE)
+    except (ValueError, Exception) as init_err:
+        if "PP-OCRv6" in str(init_err) or "not registered" in str(init_err):
+            actual_model = "PP-OCRv5_server_rec"
+            print(f"[ocr] Core {core_id} PP-OCRv6 unavailable, falling back to {actual_model}", flush=True)
+            recognizer = TextRecognition(model_name=actual_model, device="cpu", engine=ENGINE)
+        else:
+            raise
+    # ── 预缓存：预热 OCR 模型（首次推理触发 JIT 编译 + 模型缓存）────
+    # warmup failure is non-fatal — the model is loaded, first request just runs slower
+    try:
         _warm_img = np.zeros((32, 100, 3), dtype=np.uint8)
         predictor_w = recognizer.paddlex_predictor
         _warm_batch = predictor_w.pre_tfs["ReisizeNorm"](imgs=[_warm_img])
         _warm_x = predictor_w.pre_tfs["ToBatch"](imgs=_warm_batch)
         _ = predictor_w.runner(x=_warm_x)
-        print(f"[ocr] Core {core_id} ready (pre-warmed)")
-        ready_queue.put("ocr_ready")
-    except Exception as e:
-        print(f"[ocr] Core {core_id} 模型加载失败: {e}", flush=True)
-        raise
+        print(f"[ocr] Core {core_id} ready ({actual_model}, pre-warmed)")
+    except Exception as warmup_err:
+        print(f"[ocr] Core {core_id} ready ({actual_model}, warmup failed: {warmup_err})")
+    ready_queue.put("ocr_ready")
 
     while True:
         payload = req_queue.get()
