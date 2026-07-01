@@ -1,13 +1,41 @@
-param(
+﻿param(
     [ValidateSet("auto", "cpu", "gpu")]
     [string]$Target = "auto",
     [int]$Port = 8888,
+    # 默认空数组；用户不传 -PipArg 时，运行时自动探测可用 PyPI 镜像（见 Select-PypiMirror）。
     [string[]]$PipArg = @()
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
+
+# PyPI 镜像列表（国内优先，官方兜底）。Select-PypiMirror 会按顺序探测，选第一个可用的。
+$script:PypiMirrors = @(
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple",
+    "https://pypi.mirrors.ustc.edu.cn/simple",
+    "https://mirrors.cloud.tencent.com/pypi/simple",
+    "https://pypi.org/simple"
+)
+
+function Select-PypiMirror {
+    # 依次 HEAD 探测每个镜像，3 秒超时，返回第一个通的（含 https + simple 结尾校验）。
+    foreach ($url in $script:PypiMirrors) {
+        try {
+            $probe = Invoke-WebRequest -Uri $url -Method Head -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+            if ($probe.StatusCode -ge 200 -and $probe.StatusCode -lt 500) {
+                Write-Host "PyPI 镜像可用: $url" -ForegroundColor Green
+                return $url
+            }
+        } catch {
+            Write-Host "PyPI 镜像不可用: $url ($($_.Exception.Message -split "`n")[0])" -ForegroundColor DarkGray
+        }
+    }
+    # 全挂了，回退官方源（让 pip 自己报错，至少有明确信息）
+    Write-Host "所有镜像探测失败，回退官方源 pypi.org" -ForegroundColor Yellow
+    return "https://pypi.org/simple"
+}
 
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
@@ -62,6 +90,37 @@ function Test-PythonImports {
     }
 }
 
+function Test-ForeignVenv {
+    param(
+        [string]$VenvDir
+    )
+    if (-not $VenvDir -or -not (Test-Path $VenvDir)) { return $false }
+    $cfg = Join-Path $VenvDir "pyvenv.cfg"
+    if (-not (Test-Path $cfg)) { return $true }
+    try {
+        $text = Get-Content -LiteralPath $cfg -Raw -Encoding UTF8
+    } catch {
+        return $true
+    }
+    foreach ($line in ($text -split "`r?`n")) {
+        if ($line -match '^(executable|command)\s*=\s*(.+)$') {
+            $value = $Matches[2].Trim()
+            if ($value -match 'C:\\Users\\17336\\') { return $true }
+            if ($line -match '^executable\s*=' -and -not (Test-Path $value)) { return $true }
+        }
+        if ($line -match '^command\s*=.*\s-m\s+venv\s+(.+)$') {
+            $createdAt = $Matches[1].Trim().Trim('"')
+            try {
+                $expected = (Resolve-Path -LiteralPath $VenvDir -ErrorAction Stop).Path
+                if ([IO.Path]::GetFullPath($createdAt).TrimEnd('\') -ne $expected.TrimEnd('\')) { return $true }
+            } catch {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 function Has-NvidiaGpu {
     $nvidia = Get-Command nvidia-smi -ErrorAction SilentlyContinue
     if (-not $nvidia) { return $false }
@@ -72,19 +131,34 @@ function Has-NvidiaGpu {
 function Invoke-Bootstrap {
     param(
         [string]$BootstrapTarget,
-        [string]$PythonPath
+        [string]$PythonPath,
+        [switch]$ForceRecreate
     )
     $argsList = @("-Target", $BootstrapTarget)
-    if ($PythonPath -and (Test-Path $PythonPath)) {
-        Write-Host "Existing backend environment failed import checks. Recreating it..."
+    if ($ForceRecreate -or ($PythonPath -and (Test-Path $PythonPath))) {
+        Write-Host "Existing backend environment failed portability/import checks. Recreating it..."
         $argsList += "-Recreate"
     }
-    foreach ($arg in $PipArg) {
+    # 用分号把所有 pip 参数拼成单个字符串传递，避免 "-i" 等 dash 开头的值
+    # 被 PowerShell 当成下一个参数名（"Missing an argument for parameter 'PipArg'"）
+    if ($PipArg -and $PipArg.Count) {
         $argsList += "-PipArg"
-        $argsList += $arg
+        $argsList += ($PipArg -join ";")
     }
-    & powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\bootstrap_windows.ps1" @argsList
-    return $LASTEXITCODE
+    # 把 bootstrap 完整输出同时写日志文件，便于失败时诊断
+    $logPath = Join-Path $Root "logs\backend-install.log"
+    $logDir = Split-Path -Parent $logPath
+    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+    Write-Host "详细安装日志: $logPath"
+    # 用外部 powershell 进程跑 bootstrap（参数 splatting 在外部进程下可靠，
+    # 进程内 & script.ps1 @args 会把 "-Target" 当值而非参数名）。
+    # 不用 | Tee 管道（会缓冲，用户看不到 pip 进度）；子进程 stdout 直接继承当前控制台。
+    # 日志由 bootstrap 内部写（setup_backend.py 的 print 都带 flush=True）。
+    & powershell -NoProfile -ExecutionPolicy Bypass -File "$Root\scripts\bootstrap_windows.ps1" @argsList
+    $code = $LASTEXITCODE
+    # 把退出码写进日志尾部，便于诊断
+    try { Add-Content -Path $logPath -Value "[one_click_start] bootstrap exit code: $code" -Encoding UTF8 } catch {}
+    return $code
 }
 
 Assert-RequiredFiles
@@ -97,14 +171,26 @@ if ($InstallTarget -eq "auto") {
 
 $CpuPython = Join-Path $Root ".venv_paddle\Scripts\python.exe"
 $GpuPython = Join-Path $Root ".venv_paddle_gpu\Scripts\python.exe"
+$CpuVenv = Join-Path $Root ".venv_paddle"
+$GpuVenv = Join-Path $Root ".venv_paddle_gpu"
 $ImportCode = "import ultralytics, paddleocr, paddlex, cv2, PIL, numpy"
 
 $SelectedPython = if ($InstallTarget -eq "gpu") { $GpuPython } else { $CpuPython }
-$Ready = Test-PythonImports $SelectedPython $ImportCode
+$SelectedVenv = if ($InstallTarget -eq "gpu") { $GpuVenv } else { $CpuVenv }
+$NeedsRecreate = Test-ForeignVenv $SelectedVenv
+if ($NeedsRecreate) {
+    Write-Host "[WARN] Existing backend environment was created on another machine or in another folder. It will be rebuilt locally." -ForegroundColor Yellow
+}
+$Ready = (-not $NeedsRecreate) -and (Test-PythonImports $SelectedPython $ImportCode)
 
 if (-not $Ready) {
     Write-Host "Backend environment is missing or incomplete (PIL/cv2/numpy etc). Installing $InstallTarget environment..."
-    $bootstrapExit = Invoke-Bootstrap -BootstrapTarget $InstallTarget -PythonPath $SelectedPython
+    # 用户没显式传 -PipArg 时，自动探测可用 PyPI 镜像（避免单源挂了导致安装失败）
+    if (-not $PipArg -or $PipArg.Count -eq 0) {
+        $mirror = Select-PypiMirror
+        $PipArg = @("-i", $mirror)
+    }
+    $bootstrapExit = Invoke-Bootstrap -BootstrapTarget $InstallTarget -PythonPath $SelectedPython -ForceRecreate:$NeedsRecreate
     $SelectedPython = if ($InstallTarget -eq "gpu") { $GpuPython } else { $CpuPython }
     $Ready = Test-PythonImports $SelectedPython $ImportCode
 
@@ -123,6 +209,7 @@ if (-not $Ready) {
         }
         Write-Host "       Try re-extracting the latest release and rerun one-click-start.cmd." -ForegroundColor Red
         Write-Host "       If the folder path is deep, move it to C:\glm-coding-helper and retry." -ForegroundColor Red
+        Write-Host "       完整安装日志已保存到 logs\backend-install.log，排查请提供此文件。" -ForegroundColor Yellow
         Read-Host "Press Enter to exit"
         exit 1
     }

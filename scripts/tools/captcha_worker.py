@@ -23,6 +23,15 @@ BACKEND_CONFIG = resolve_backend_config(source="worker")
 apply_backend_config(BACKEND_CONFIG)
 print_config(BACKEND_CONFIG)
 
+
+def _venv_python(venv_name: str) -> Path:
+    """跨平台返回虚拟环境里的 python 可执行文件路径。"""
+    base = ROOT / venv_name
+    if os.name == "nt":
+        return base / "Scripts" / "python.exe"
+    return base / "bin" / "python"
+
+
 _DEFAULT_DETECTOR_PATH = ROOT / "models" / "weights" / "yolo-captcha-detector.pt"
 _LEGACY_DETECTOR_PATH = (
     ROOT
@@ -49,7 +58,7 @@ if OCR_MODE in {"cpu", "cpu_parallel", "cpu-pool"}:
     OCR_PYTHON = Path(
         os.environ.get(
             "CNCAPTCHA_CPU_OCR_PYTHON",
-            str(ROOT / ".venv_paddle" / _OCR_BIN / _OCR_PY),
+            str(_venv_python(".venv_paddle")),
         )
     )
     OCR_WORKER = ROOT / "scripts" / "tools" / "ppocr_cpu_pool_worker.py"
@@ -58,14 +67,33 @@ else:
     OCR_PYTHON = Path(
         os.environ.get(
             "CNCAPTCHA_GPU_OCR_PYTHON",
-            str(ROOT / ".venv_paddle_gpu" / _OCR_BIN / _OCR_PY),
+            str(_venv_python(".venv_paddle_gpu")),
         )
     )
     OCR_WORKER = ROOT / "scripts" / "tools" / "ppocr_gpu_worker.py"
-    OCR_ENGINE_NAME = f"yolo+{os.environ.get('CNCAPTCHA_GPU_OCR_MODEL', 'PP-OCRv5_server_rec')}_gpu"
+    OCR_ENGINE_NAME = f"yolo+{os.environ.get('CNCAPTCHA_GPU_OCR_MODEL', 'PP-OCRv6_tiny_rec')}_gpu"
 CROP_DIR = ROOT / "logs" / "ppocr_live_crops"
+CROP_KEEP_FILES = 200  # ppocr_live_crops 滚动保留最近 200 个裁剪图，避免无限增长
 YOLO_IMGSZ = int(os.environ.get("CNCAPTCHA_YOLO_IMGSZ", "448"))
 YOLO_DEVICE = os.environ.get("CNCAPTCHA_YOLO_DEVICE", "").strip() or None
+
+
+def _prune_crops() -> None:
+    """保留最近修改的 CROP_KEEP_FILES 个裁剪图，删除更老的。静默失败。"""
+    try:
+        if not CROP_DIR.exists():
+            return
+        files = [p for p in CROP_DIR.iterdir() if p.is_file() and p.suffix.lower() == ".png"]
+        if len(files) <= CROP_KEEP_FILES:
+            return
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[CROP_KEEP_FILES:]:
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 detector = YOLO(str(DETECTOR_PATH))
 _ocr_proc: subprocess.Popen | None = None
@@ -157,8 +185,36 @@ def indices_for_prompt(box_chars: list[str], prompt_chars: list[str]) -> list[in
 def map_prompt_to_boxes(box_chars: list[str], prompt_chars: list[str], ocr_rows: list[dict]) -> list[int]:
     try:
         return indices_for_prompt(box_chars, prompt_chars)
-    except RuntimeError as exc:
-        raise RuntimeError(f"{exc}; ocr_rows={json.dumps(ocr_rows, ensure_ascii=False)}") from exc
+    except RuntimeError:
+        # 精确匹配失败（OCR 误识别形近字 / 多窗口请求串了 / 验证码刷新）。
+        # 不要崩溃——用 candidate_scores 做 best-effort 匹配，每个 prompt 字选候选分最高的未用 box。
+        import sys as _sys
+        _sys.stderr.write(f"[worker] WARN: exact match failed prompt={''.join(prompt_chars)} boxes={''.join(box_chars)}; using candidate-score fallback\n")
+        _sys.stderr.flush()
+        used: set[int] = set()
+        indices: list[int] = []
+        for char in prompt_chars:
+            best_idx, best_score = -1, -1.0
+            for idx, row in enumerate(ocr_rows):
+                if idx in used:
+                    continue
+                scores = row.get("candidate_scores") or {}
+                score = float(scores.get(char, 0.0) or 0.0)
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+            if best_idx < 0:
+                # 连候选分都没有，按位置兜底
+                for idx in range(len(ocr_rows)):
+                    if idx not in used:
+                        best_idx = idx
+                        break
+            if best_idx >= 0:
+                used.add(best_idx)
+                indices.append(best_idx)
+            else:
+                indices.append(0)
+        return indices
 
 
 def write_response(resp: dict) -> None:
@@ -218,6 +274,27 @@ for raw_line in sys.stdin.buffer:
         confs = [item[1] for item in selected]
 
         if len(boxes) != 3:
+            # 预热兜底：白图/样本图 YOLO 检测不到字时，OCR 子进程不会被调用 →
+            # 没被预热 → 第一个真验证码撞 OCR JIT（实测 5-8s）导致客户端超时丢点。
+            # 这里强制把图横切3块喂给 OCR 跑一次，确保 OCR 子进程完成 JIT 预热。
+            if req.get("force_ocr_warmup"):
+                try:
+                    CROP_DIR.mkdir(parents=True, exist_ok=True)
+                    w3 = image.width // 3
+                    stamp = f"{int(_time.time() * 1000)}"
+                    fake_crops = []
+                    for wi in range(3):
+                        crop = image.crop((wi * w3, 0, (wi + 1) * w3, image.height))
+                        cp = CROP_DIR / f"_warmup_{stamp}_{wi}.png"
+                        crop.save(cp)
+                        fake_crops.append(cp)
+                    _prune_crops()
+                    ask_ocr(fake_crops, chars)
+                    sys.stderr.write("[worker] OCR warmup done (forced on non-3-boxes image)\n")
+                    sys.stderr.flush()
+                except Exception as we:
+                    sys.stderr.write(f"[worker] OCR warmup failed: {we}\n")
+                    sys.stderr.flush()
             write_response({"error": f"detected {len(boxes)} boxes, need 3", "success": False, "reason": reason})
             continue
 
@@ -230,6 +307,8 @@ for raw_line in sys.stdin.buffer:
             path = CROP_DIR / f"{Path(img_path).stem}_{stamp}_box{idx}.png"
             crop.save(path)
             crop_paths.append(path)
+
+        _prune_crops()
 
         ocr_t0 = _time.perf_counter()
         ocr_rows, ocr_meta = ask_ocr(crop_paths, chars)

@@ -1,8 +1,8 @@
 ﻿// ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      22.2
-// @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR 自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护
+// @version      23.9
+// @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR（PP-OCRv6）自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护。订阅入口被风控拦截时手动点「特惠订阅」即可，验证码自动打。
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
 // @match        https://bigmodel.cn/glm-coding*
@@ -19,6 +19,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
 // @connect      localhost:8888
+// @connect      127.0.0.1
 // @connect      127.0.0.1:8888
 // @connect      gtimg.com
 // @connect      *.gtimg.com
@@ -32,6 +33,8 @@
 // ==/UserScript==
 (function () {
     'use strict';
+    const SCRIPT_VERSION = '23.2';
+    const BOOT_BAR_ID = 'glm-helper-status-bar';
     const __glmHost = (() => { try { return location.hostname || ''; } catch { return ''; } })();
     const __inMiniMax = __glmHost === 'platform.minimaxi.com';
     if (__inMiniMax) {
@@ -45,6 +48,7 @@
     }
     function initTencentCaptchaDirectBridge() {
         const DIRECT_OCR_URL = 'http://127.0.0.1:8888/captcha_direct';
+        const RUNTIME_PAUSE_KEY = 'glm_runtime_paused_v1';
         const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
         let solving = false;
         let lastBgUrl = '';
@@ -58,6 +62,9 @@
         })();
         function log(msg) {
             console.log('[glm-captcha-direct] ' + msg);
+        }
+        function isRuntimePaused() {
+            try { return GM_getValue(RUNTIME_PAUSE_KEY, false) === true; } catch { return false; }
         }
         function visible(el) {
             if (!el) return false;
@@ -102,6 +109,9 @@
                 const cleaned = raw
                     .replace(/^\s*\u8BF7\u4F9D\u6B21\u70B9\u51FB[:\uff1a]?\s*/, '')
                     .replace(/\s+/g, '');
+                // 排除说明性文字（"验证码""安全验证"等），它们也会被当成目标字
+                // 传给后端导致 detected 0 boxes。
+                if (/\u9A8C\u8BC1\u7801|\u5B89\u5168\u9A8C\u8BC1|\u70B9\u51FB\u56FE\u4E2D|\u70B9\u51FB\u8FDB\u884C|\u56FE\u5F62\u9A8C\u8BC1|\u8BF7\u70B9\u51FB|\u5B8C\u6210\u9A8C\u8BC1|\u8FDB\u884C\u9A8C\u8BC1/.test(cleaned)) continue;
                 const chars = (cleaned.match(/[\u4e00-\u9fff]/g) || []).slice(-3);
                 if (chars.length >= 3) return chars.join('');
             }
@@ -173,7 +183,10 @@
                     });
                 });
             }
-            return doFetch().catch(() => doGM());
+            // 同 serverRequest：localhost 路径优先走 GM 以避开 LNA fetch 拦截
+            return (typeof GM_xmlhttpRequest === 'function')
+                ? doGM().catch(() => doFetch())
+                : doFetch();
         }
         function dispatchClick(el, nx, ny, label) {
             const rect = el.getBoundingClientRect();
@@ -211,6 +224,7 @@
             return visible(note);
         }
         async function solveOnce() {
+            if (isRuntimePaused()) return;
             if (!captchaCfg.AUTO_CAPTCHA_CLICK) return;
             const bgEl = findBgElement();
             if (!bgEl) return;
@@ -241,7 +255,7 @@
                 await sleep(180);
             }
             await sleep(250);
-            if (captchaCfg.AUTO_CAPTCHA_CONFIRM) clickConfirm();
+            if (!isRuntimePaused() && captchaCfg.AUTO_CAPTCHA_CONFIRM) clickConfirm();
         }
         async function tick() {
             if (solving) return;
@@ -259,17 +273,105 @@
         const root = document.body || document.documentElement;
         observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
         setTimeout(tick, 500);
-        setInterval(tick, 1200);
+        setInterval(tick, 200);  // 验证码检测频率：200ms（之前 1200ms 太慢，验证码出来后要等最坏 1.2s 才开始处理）
     }
     // ── 去重保护：防止篡猴里装了改名导致的两个实例同时运行 ──────────────────
-    if (document.documentElement.dataset.glmHelper === '1') { return; }
+    function ensureStatusBarNode() {
+        let bar = document.getElementById(BOOT_BAR_ID);
+        if (bar) return bar;
+        const parent = document.body || document.documentElement;
+        if (!parent) return null;
+        bar = document.createElement('div');
+        bar.id = BOOT_BAR_ID;
+        bar.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:2147483647;padding:7px 16px;font:13px/1.5 system-ui,sans-serif;color:#fff;display:flex;align-items:center;justify-content:space-between;box-shadow:0 -2px 8px rgba(0,0,0,.25);transition:background .4s';
+        const text = document.createElement('span');
+        const x = document.createElement('button');
+        x.textContent = '×';
+        x.style.cssText = 'background:rgba(255,255,255,.2);border:none;color:#fff;width:22px;height:22px;border-radius:4px;cursor:pointer;font-size:16px;line-height:1;flex-shrink:0';
+        x.onclick = () => { bar.remove(); };
+        bar.append(text, x);
+        parent.appendChild(bar);
+        return bar;
+    }
+    function setBootBar(html, bg = '#1677ff') {
+        const run = () => {
+            const bar = ensureStatusBarNode();
+            if (!bar) return;
+            bar.style.background = bg;
+            bar.firstElementChild.innerHTML = `🤖 <b>抢购助手 v${SCRIPT_VERSION}</b> &nbsp;|&nbsp; ${html}`;
+        };
+        if (document.body || document.documentElement) run();
+        else document.addEventListener('DOMContentLoaded', run, { once: true });
+    }
+    function requestBackendHealth(timeoutMs = 2500) {
+        return new Promise((resolve, reject) => {
+            const url = 'http://127.0.0.1:8888/health?from=glm_helper_' + Date.now();
+            let done = false;
+            const timer = setTimeout(() => {
+                if (done) return;
+                done = true;
+                reject(new Error('timeout'));
+            }, timeoutMs);
+            function finish(ok, value) {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                ok ? resolve(value) : reject(value);
+            }
+            if (typeof GM_xmlhttpRequest === 'function') {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    timeout: timeoutMs,
+                    onload: (res) => {
+                        try { finish(true, JSON.parse(res.responseText || '{}')); }
+                        catch (e) { finish(false, e); }
+                    },
+                    onerror: () => finish(false, new Error('request failed')),
+                    ontimeout: () => finish(false, new Error('timeout')),
+                });
+                return;
+            }
+            fetch(url, { cache: 'no-store' })
+                .then(r => r.json())
+                .then(data => finish(true, data))
+                .catch(e => finish(false, e));
+        });
+    }
+    function bootBackendProbe() {
+        setBootBar('准备中：默认不主动点击订阅；按 <b>F9</b> 开启自动点击，或等待 Rush 目标时间。正在检查本地 OCR 后端...', '#1677ff');
+        requestBackendHealth().then((h) => {
+            const ready = `${h.ready_workers ?? '?'} / ${h.workers ?? '?'}`;
+            const status = h.status || 'unknown';
+            const color = status === 'ok' ? '#237804' : '#d46b08';
+            setBootBar(`已连接本地 OCR 后端：${status}，worker ${ready}，端口 ${h.port || 8888}。默认不自动点击订阅；按 <b>F9</b> 开启，按 <b>F8</b> 暂停。`, color);
+        }).catch(() => {
+            setBootBar('未连接本地 OCR 后端：请先启动后端 127.0.0.1:8888。脚本仍会准备页面，但验证码识别不可用；默认不自动点击订阅，按 <b>F9</b> 可手动开启。', '#d46b08');
+        });
+    }
+    if (document.documentElement.dataset.glmHelper === '1') {
+        setBootBar('检测到页面上已有一个抢购助手实例，本实例未重复启动。若没有状态提示，请在篡改猴里只保留最新版脚本。', '#d46b08');
+        return;
+    }
     document.documentElement.dataset.glmHelper = '1';
+    bootBackendProbe();
     // ── 最早读配置（document-start 时还没有主流程）──────────────────────────
     const EARLY_STORAGE_KEY = 'glm_coding_config_v5';
-    const SAFE_DEFAULTS_VERSION = 2;
+    const SAFE_DEFAULTS_VERSION = 4;
     const _ec = (() => { try { return JSON.parse(GM_getValue(EARLY_STORAGE_KEY, '{}')); } catch { return {}; } })();
     if (_ec.SAFE_DEFAULTS_VERSION !== SAFE_DEFAULTS_VERSION) {
         _ec.AUTO_CLOSE_INVALID = false;
+        _ec.AUTO_CLICK_SUB = false;
+        const oldRushTarget = (_ec.RUSH_TARGET_HOUR == null && _ec.RUSH_TARGET_MIN == null && _ec.RUSH_TARGET_SEC == null) ||
+            (Number(_ec.RUSH_TARGET_HOUR) === 9 && Number(_ec.RUSH_TARGET_MIN) === 59 && Number(_ec.RUSH_TARGET_SEC) === 58);
+        if (oldRushTarget) {
+            _ec.RUSH_TARGET_HOUR = 10;
+            _ec.RUSH_TARGET_MIN = 0;
+            _ec.RUSH_TARGET_SEC = 0;
+        }
+        if (_ec.RUSH_RELEASE_ADVANCE_MS == null || Number(_ec.RUSH_RELEASE_ADVANCE_MS) === 40) {
+            _ec.RUSH_RELEASE_ADVANCE_MS = 0;
+        }
         _ec.SAFE_DEFAULTS_VERSION = SAFE_DEFAULTS_VERSION;
         GM_setValue(EARLY_STORAGE_KEY, JSON.stringify(_ec));
     }
@@ -497,6 +599,7 @@
     }
     // ── 配置 ──────────────────────────────────────────────────────────────────
     const STORAGE_KEY = 'glm_coding_config_v5';
+    const RUNTIME_PAUSE_KEY = 'glm_runtime_paused_v1';
     const TABS_MAP    = { 1: '连续包月', 2: '连续包季', 3: '连续包年' };
     const PKGS_MAP    = { 1: 'Lite',    2: 'Pro',      3: 'Max'      };
     const DEF = {
@@ -505,7 +608,7 @@
         CHECK_INTERVAL    : 80,
         SMART_REFRESH     : true,
         AUTO_CLOSE_INVALID: false,
-        AUTO_CLICK_SUB    : true,
+        AUTO_CLICK_SUB    : false,
         AUTO_CAPTCHA_CLICK : true,
         AUTO_CAPTCHA_CONFIRM: false,
         CAPTCHA_CLICK_DELAY_MODE : 'range',
@@ -513,21 +616,198 @@
         CAPTCHA_CLICK_DELAY_MIN_MS: 250,
         CAPTCHA_CLICK_DELAY_MAX_MS: 400,
         CAPTCHA_CLICK_DELAY_JITTER_PERCENT: 20,
+        // 首击前延迟（验证码 DOM 渲染/动画需要时间，识别太快会导致第一击落空）。随机区间。
+        CAPTCHA_FIRST_CLICK_DELAY_MIN_MS: 150,
+        CAPTCHA_FIRST_CLICK_DELAY_MAX_MS: 300,
         RUSH_ENABLED        : false,
-        RUSH_TARGET_HOUR    : 9,
-        RUSH_TARGET_MIN     : 59,
-        RUSH_TARGET_SEC     : 58,
+        RUSH_TARGET_HOUR    : 10,
+        RUSH_TARGET_MIN     : 0,
+        RUSH_TARGET_SEC     : 0,
         RUSH_HOLD_WINDOW_MS : 10000,
-        RUSH_RELEASE_ADVANCE_MS: 40,
+        RUSH_RELEASE_ADVANCE_MS: 0,
+        HOTKEY_PAUSE: 'F8',
+        HOTKEY_AUTO_CLICK_SUB: 'F9',
     };
     function loadCfg() { try { const s = GM_getValue(STORAGE_KEY, null); return s ? { ...DEF, ...JSON.parse(s) } : { ...DEF }; } catch { return { ...DEF }; } }
     function saveCfg(c) { GM_setValue(STORAGE_KEY, JSON.stringify(c)); }
     const CFG = loadCfg();
+    let runtimePaused = (() => { try { return GM_getValue(RUNTIME_PAUSE_KEY, false) === true; } catch { return false; } })();
+    const RUSH_LATENCY_KEY = 'glm_rush_latency_v1';
+    function rushNumber(value, fallback) {
+        const n = parseInt(value, 10);
+        return Number.isFinite(n) ? n : fallback;
+    }
+    function getRushTargetTimestamp(now = Date.now()) {
+        const target = new Date(now);
+        target.setHours(
+            rushNumber(CFG.RUSH_TARGET_HOUR, 10),
+            rushNumber(CFG.RUSH_TARGET_MIN, 0),
+            rushNumber(CFG.RUSH_TARGET_SEC, 0),
+            0
+        );
+        return target.getTime();
+    }
+    function getRushRemainingMs(now = Date.now()) {
+        return getRushTargetTimestamp(now) - now;
+    }
+    function isRushTargetReached(now = Date.now()) {
+        return CFG.RUSH_ENABLED && getRushRemainingMs(now) <= 0;
+    }
+    function readyModeText() {
+        if (CFG.AUTO_CLICK_SUB) return `自动点击订阅已开启，${autoClickSubHotkey()} 可关闭`;
+        if (CFG.RUSH_ENABLED) {
+            const remaining = Math.max(0, getRushRemainingMs());
+            if (remaining > 0) return `准备中：默认不主动点击订阅，按 ${autoClickSubHotkey()} 手动开启，或等待目标时间 <b>${fmt(remaining)}</b>`;
+            return '目标时间已到：允许自动点击订阅';
+        }
+        return `准备中：默认不主动点击订阅，按 ${autoClickSubHotkey()} 开启，或手动点击订阅`;
+    }
+    function medianRush(values) {
+        const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+        if (!sorted.length) return null;
+        return sorted[Math.floor(sorted.length / 2)];
+    }
+    function computeRushReleaseAdvance(rttMs) {
+        if (!Number.isFinite(rttMs)) return 0;
+        const oneWay = Math.max(0, rttMs / 2);
+        return Math.max(0, Math.min(180, Math.round(oneWay - 20)));
+    }
+    async function calibrateRushLatency() {
+        if (!CFG.RUSH_ENABLED) return;
+        const samples = [];
+        const url = GLM_CODING_URL() + '&rush_probe=' + Date.now();
+        for (let i = 0; i < 3; i++) {
+            try {
+                const t0 = performance.now();
+                await fetch(url + '_' + i, { method: 'GET', credentials: 'include', cache: 'no-store' });
+                samples.push(performance.now() - t0);
+            } catch (e) {}
+            if (i < 2) await new Promise(r => setTimeout(r, 160));
+        }
+        const rtt = medianRush(samples);
+        if (rtt == null) return;
+        const manualAdvance = Math.max(0, parseInt(CFG.RUSH_RELEASE_ADVANCE_MS, 10) || 0);
+        const autoAdvance = computeRushReleaseAdvance(rtt);
+        const advance = manualAdvance > 0 ? manualAdvance : autoAdvance;
+        const payload = { rttMs: Math.round(rtt), advanceMs: advance, at: Date.now(), source: manualAdvance > 0 ? 'manual' : 'auto' };
+        GM_setValue(RUSH_LATENCY_KEY, JSON.stringify(payload));
+        console.log('[GLM] rush latency calibrated:', payload);
+    }
     GM_registerMenuCommand('⚙️ 打开配置面板', openConfigPanel);
     GM_registerMenuCommand('🗑️ 清除今日套餐状态缓存', () => { localStorage.removeItem(_dsKey); alert('今日状态已清除，即将刷新。'); location.reload(); });
     GM_registerMenuCommand('🚀 一键多开窗口', openMultipleWindows);
+    function normalizeHotkeyString(value, fallback = '') {
+        const raw = String(value || '').trim();
+        if (!raw) return fallback;
+        const aliases = {
+            esc: 'Escape',
+            escape: 'Escape',
+            ins: 'Insert',
+            insert: 'Insert',
+            del: 'Delete',
+            delete: 'Delete',
+            space: 'Space',
+            ' ': 'Space',
+            pause: 'Pause',
+            home: 'Home',
+            end: 'End',
+            pgup: 'PageUp',
+            pageup: 'PageUp',
+            pgdn: 'PageDown',
+            pagedown: 'PageDown',
+        };
+        const parts = raw.split('+').map(s => s.trim()).filter(Boolean);
+        const mods = [];
+        let key = '';
+        for (const part of parts) {
+            const lower = part.toLowerCase();
+            if (lower === 'ctrl' || lower === 'control') { if (!mods.includes('Ctrl')) mods.push('Ctrl'); continue; }
+            if (lower === 'alt') { if (!mods.includes('Alt')) mods.push('Alt'); continue; }
+            if (lower === 'shift') { if (!mods.includes('Shift')) mods.push('Shift'); continue; }
+            if (lower === 'meta' || lower === 'cmd' || lower === 'win') { if (!mods.includes('Meta')) mods.push('Meta'); continue; }
+            if (/^f([1-9]|1[0-2])$/i.test(part)) key = part.toUpperCase();
+            else if (aliases[lower]) key = aliases[lower];
+            else if (part.length === 1) key = part.toUpperCase();
+            else key = part;
+        }
+        if (!key) return fallback;
+        return [...mods, key].join('+');
+    }
+    function hotkeyFromEvent(e) {
+        const mods = [];
+        if (e.ctrlKey) mods.push('Ctrl');
+        if (e.altKey) mods.push('Alt');
+        if (e.shiftKey) mods.push('Shift');
+        if (e.metaKey) mods.push('Meta');
+        let key = e.key || '';
+        if (!key || ['Control', 'Alt', 'Shift', 'Meta'].includes(key)) return '';
+        if (key === ' ') key = 'Space';
+        if (/^f([1-9]|1[0-2])$/i.test(key)) key = key.toUpperCase();
+        else if (key.length === 1) key = key.toUpperCase();
+        return [...mods, key].join('+');
+    }
+    function hotkeyMatches(e, hotkey) {
+        return normalizeHotkeyString(hotkey) === hotkeyFromEvent(e);
+    }
+    const pauseHotkey = () => normalizeHotkeyString(CFG.HOTKEY_PAUSE, 'F8');
+    const autoClickSubHotkey = () => normalizeHotkeyString(CFG.HOTKEY_AUTO_CLICK_SUB, 'F9');
+    GM_registerMenuCommand(`⏯️ 暂停/恢复脚本 (${pauseHotkey()})`, toggleRuntimePause);
+    GM_registerMenuCommand(`🖱️ 切换自动点击订阅 (${autoClickSubHotkey()})`, toggleAutoClickSub);
+    function saveRuntimeCfgPatch(patch) {
+        Object.assign(CFG, patch);
+        saveCfg({ ...CFG });
+    }
+    function setRuntimePaused(paused, source = 'hotkey') {
+        runtimePaused = paused === true;
+        GM_setValue(RUNTIME_PAUSE_KEY, runtimePaused);
+        if (runtimePaused) {
+            setBar(`⏸️ 脚本已暂停（${source}）。${pauseHotkey()} 恢复。`, '#722ed1');
+        } else {
+            // 恢复时：如果正在 WAITING，重置 taskClickTime（让超时从恢复时刻重新算，
+            // 避免暂停期间 elapsed 虚高导致误超时）；如果 WAITING 但弹窗已不在
+            // （暂停期间被手动关了），直接回 IDLE 重试，避免干等到超时。
+            if (state === 'TASK_UNIT' && taskPhase === 'WAITING') {
+                taskClickTime = Date.now();
+                const hasModal = findRLModal() || isPayDialog() || isSuccessDialog();
+                if (!hasModal) {
+                    taskPhase = 'IDLE';
+                    setBar(`▶️ 脚本已恢复（${source}），弹窗已关，重试点订阅。`, '#237804');
+                    return;
+                }
+            }
+            setBar(`▶️ 脚本已恢复（${source}）。`, '#237804');
+        }
+    }
+    function toggleRuntimePause() {
+        setRuntimePaused(!runtimePaused);
+    }
+    function toggleAutoClickSub() {
+        const next = !CFG.AUTO_CLICK_SUB;
+        saveRuntimeCfgPatch({ AUTO_CLICK_SUB: next });
+        setBar(`${next ? '✅ 已开启' : '🛑 已关闭'}自动点击订阅（${autoClickSubHotkey()}）`, next ? '#237804' : '#d46b08');
+    }
+    function isEditableHotkeyTarget(el) {
+        if (!el) return false;
+        const tag = (el.tagName || '').toLowerCase();
+        return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+    }
+    function handleControlHotkeys(e) {
+        if (isEditableHotkeyTarget(e.target)) return false;
+        if (hotkeyMatches(e, pauseHotkey())) {
+            e.preventDefault();
+            toggleRuntimePause();
+            return true;
+        }
+        if (hotkeyMatches(e, autoClickSubHotkey())) {
+            e.preventDefault();
+            toggleAutoClickSub();
+            return true;
+        }
+        return false;
+    }
     // ── v8.0: ESC 键快速关闭弹窗 ──────────────────────────────────────────────
     document.addEventListener('keydown', (e) => {
+        if (handleControlHotkeys(e)) return;
         if (e.key === 'Escape' || e.keyCode === 27) {
             const busyDlg = document.querySelector('.el-dialog__wrapper .empty-data-wrap');
             if (busyDlg) {
@@ -595,6 +875,7 @@
     let qIdx = 0, sweepRestocks = [], lastTabSwitch = 0, sweepBusyCount = 0, emptySweepCount = 0;
     const soldOutHits = Object.create(null);
     let taskTarget = null, taskPhase = 'IDLE', taskClickTime = 0, taskRLCount = 0;
+    let taskClickCaptchaSeq = 0;  // 本次点击时记录的验证码计数器基线；WAITING 里比对是否增长判断验证码是否弹出
     let lastCloseReason = '';
     const MAX_RL = 3, MODAL_WAIT = 15000, EMPTY_SWEEP_CONFIRM = 3, SOLD_OUT_CONFIRM = 2;
     // ── 工具函数 ──────────────────────────────────────────────────────────────
@@ -645,8 +926,8 @@
     // ── DOM 访问 ──────────────────────────────────────────────────────────────
     const tabEl     = n => document.querySelectorAll('#switchTabBox .switch-tab-item')[n - 1];
     const btnEl     = n => document.querySelector(`.glm-coding-package-list > div:nth-child(${n}) > div > .package-card-btn-box > button`);
-    const canBuy    = b => b && !b.disabled && !b.classList.contains('is-disabled') && !b.classList.contains('disabled') && !/售罄|补货|暂时/.test(b.innerText || '');
-    const isSoldOut = b => /售罄|补货|暂时/.test(b?.innerText || '');
+    const canBuy    = b => b && !b.disabled && !b.classList.contains('is-disabled') && !b.classList.contains('disabled') && !/售罄|补货|暂时|抢购人数过多|刷新再试|请稍后/.test(b.innerText || '');
+    const isSoldOut = b => /售罄|补货|暂时|抢购人数过多|刷新再试|请稍后/.test(b?.innerText || '');
     const isBusy    = b => /抢购人数过多|请刷新/.test(b?.innerText || '');
     // ── 弹窗检测 ──────────────────────────────────────────────────────────────
     function findRLModal() {
@@ -713,9 +994,13 @@
     }
     // ── v8.9: 弹窗关闭决策（三态返回）────────────────────────────────────────
     // 返回: 'close' → 关弹窗试下一个 | 'keep' → 不关 | 'warn' → 异常，告知用户
+    // 无金额无效页兜底：GLM 有时先显示无金额/没抢到，过 ~1 秒才弹出真金额订单（#16/#40），
+    // 所以无金额不能立刻关，要持续无金额超过 1.7s 才判无效页关闭。
+    let noPriceSince = 0;
+    const NO_PRICE_GRACE_MS = 1700;
     function checkPayDialog() {
         const dlg = getPayDialog();
-        if (!dlg) return 'keep';
+        if (!dlg) { noPriceSince = 0; return 'keep'; }
         if (window.__glmRushConfirmed) {
             window.__glmRushDialogSeen = 1;
             return 'keep';
@@ -739,21 +1024,29 @@
         }
         // ── 情况 D：接口没说售罄/繁忙，但弹窗里出现小飞机 → 异常不一致
         if (hasAirplaneInDialog()) return 'warn';
-        // ── 情况 C：接口成功 + 有价格 → 不关
+        // ── 情况 C：接口成功/其它 → 看弹窗实际有没有金额
+        const prices = readDialogPrices();
+        if (prices?.any) {
+            // 有有效金额（真支付页），清掉无金额计时，保留弹窗等用户支付。
+            noPriceSince = 0;
+            return 'keep';
+        }
+        // 无金额（疑似无效支付页）。GLM 有时会延迟 ~1s 才渲染出真金额订单，
+        // 不能立刻关——持续无金额超过宽限期才判无效页关闭。
+        if (!noPriceSince) noPriceSince = Date.now();
+        if (Date.now() - noPriceSince >= NO_PRICE_GRACE_MS) {
+            console.log('[GLM v8.9] 无金额持续 ' + (Date.now() - noPriceSince) + 'ms，判定为无效支付页');
+            return 'close';
+        }
+        console.log('[GLM v8.9] 弹窗暂无金额，宽限等待 ' + (Date.now() - noPriceSince) + '/' + NO_PRICE_GRACE_MS + 'ms');
         return 'keep';
     }
     // ── 底部状态栏 ────────────────────────────────────────────────────────────
     var _bar = null;
     function setBar(html, bg = '#1677ff') {
         if (!_bar) {
-            _bar = document.createElement('div');
-            _bar.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:2147483647;padding:7px 16px;font:13px/1.5 system-ui,sans-serif;color:#fff;display:flex;align-items:center;justify-content:space-between;box-shadow:0 -2px 8px rgba(0,0,0,.25);transition:background .4s';
-            const x = document.createElement('button');
-            x.textContent = '×';
-            x.style.cssText = 'background:rgba(255,255,255,.2);border:none;color:#fff;width:22px;height:22px;border-radius:4px;cursor:pointer;font-size:16px;line-height:1;flex-shrink:0';
-            x.onclick = () => { _bar.remove(); _bar = null; };
-            _bar.append(document.createElement('span'), x);
-            document.body.appendChild(_bar);
+            _bar = ensureStatusBarNode();
+            if (!_bar) return;
         }
         _bar.style.background = bg;
         _bar.firstElementChild.innerHTML = `🤖 <b>抢购助手</b> &nbsp;|&nbsp; ${html}`;
@@ -840,6 +1133,9 @@
         const delayMin = Number.isFinite(parseInt(CFG.CAPTCHA_CLICK_DELAY_MIN_MS, 10)) ? parseInt(CFG.CAPTCHA_CLICK_DELAY_MIN_MS, 10) : 250;
         const delayMaxRaw = Number.isFinite(parseInt(CFG.CAPTCHA_CLICK_DELAY_MAX_MS, 10)) ? parseInt(CFG.CAPTCHA_CLICK_DELAY_MAX_MS, 10) : 400;
         const delayMax = Math.max(delayMin, delayMaxRaw);
+        const fcMin = Number.isFinite(parseInt(CFG.CAPTCHA_FIRST_CLICK_DELAY_MIN_MS, 10)) ? parseInt(CFG.CAPTCHA_FIRST_CLICK_DELAY_MIN_MS, 10) : 150;
+        const fcMaxRaw = Number.isFinite(parseInt(CFG.CAPTCHA_FIRST_CLICK_DELAY_MAX_MS, 10)) ? parseInt(CFG.CAPTCHA_FIRST_CLICK_DELAY_MAX_MS, 10) : 300;
+        const fcMax = Math.max(fcMin, fcMaxRaw);
         if (!document.getElementById('glm-tf-s')) {
             const s = document.createElement('style'); s.id = 'glm-tf-s';
             s.textContent = '.tf-item{padding:6px 10px;margin-bottom:4px;border-radius:4px;cursor:pointer;font-size:13px;color:#333;border:1px solid transparent;transition:all .15s}.tf-item:hover{background:#f5f5f5}.tf-item.active{background:#e6f7ff;border-color:#91d5ff;color:#1890ff;font-weight:700}.tf-btn{padding:4px 8px;font-size:10px;cursor:pointer;border:1px solid #d9d9d9;border-radius:4px;background:#fff;color:#555;height:28px;transition:.2s}.tf-btn:hover{border-color:#40a9ff;color:#40a9ff}';
@@ -865,8 +1161,8 @@
                 </label>
                 <label style="display:flex;align-items:center;cursor:pointer">
                     <input type="checkbox" id="glm-acs" ${CFG.AUTO_CLICK_SUB ? 'checked' : ''} style="margin-right:8px">
-                    <span style="font-size:14px;color:#555">自动点击订阅</span>
-                    <span title="开启后脚本发现可购买的套餐会自动点击订阅按钮。&#10;关闭后只报警提醒，需手动点击（适合想自己掌控点击时机的场景）。" style="margin-left:6px;cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
+                    <span style="font-size:14px;color:#555">自动点击订阅（默认关闭）</span>
+                    <span title="默认关闭，避免脚本加载后自动触发购买链路。&#10;开启后脚本发现可购买的套餐会自动点击订阅按钮；也可用快捷键临时开启。&#10;Rush mode 到目标时间后可自动点击。" style="margin-left:6px;cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
                 </label>
                 <label style="display:flex;align-items:center;cursor:pointer">
                     <input type="checkbox" id="glm-acc" ${CFG.AUTO_CAPTCHA_CLICK ? 'checked' : ''} style="margin-right:8px">
@@ -891,11 +1187,24 @@
                         <input type="number" id="glm-cdmax" value="${delayMax}" min="1" max="10000" style="width:72px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
                         <span style="font-size:13px;color:#888">ms</span>
                     </div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+                        <span style="font-size:13px;color:#666">首击前延时</span>
+                        <span title="识别完到点第一个字之间的等待。验证码 DOM 渲染/动画需要时间，OCR 太快会导致第一击落空。设为 0 则不等。随机区间。" style="cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                        <span style="font-size:13px;color:#888">最小</span>
+                        <input type="number" id="glm-fcdmin" value="${fcMin}" min="0" max="10000" style="width:72px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                        <span style="font-size:13px;color:#888">ms</span>
+                        <span style="font-size:13px;color:#888">最大</span>
+                        <input type="number" id="glm-fcdmax" value="${fcMax}" min="0" max="10000" style="width:72px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                        <span style="font-size:13px;color:#888">ms</span>
+                    </div>
                 </div>
                 <div style="border-top:1px dashed #eee;padding-top:12px;margin-top:4px"></div>
                 <label style="display:flex;align-items:center;cursor:pointer">
                     <input type="checkbox" id="glm-re" ${CFG.RUSH_ENABLED ? 'checked' : ''} style="margin-right:8px">
                     <span style="font-size:14px;color:#555">冲刺模式（定时确认）</span>
+                    <span title="开启后，脚本目标时间前不会自动点击订阅；目标时间已到才允许进入购买链路。验证码确定仍按实测 RTT 保守释放：不早于预测安全点，不晚于目标时间。" style="margin-left:6px;cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
                 </label>
                 <div style="display:flex;align-items:center;gap:6px;padding-left:26px">
                     <span style="font-size:13px;color:#888">目标时间</span>
@@ -904,6 +1213,20 @@
                     <input type="number" id="glm-rm" value="${CFG.RUSH_TARGET_MIN}" min="0" max="59" style="width:52px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
                     <span style="font-size:14px;color:#888">:</span>
                     <input type="number" id="glm-rs" value="${CFG.RUSH_TARGET_SEC}" min="0" max="59" style="width:52px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                </div>
+                <div style="border-top:1px dashed #eee;padding-top:12px;margin-top:4px"></div>
+                <div style="padding-left:26px;display:flex;flex-direction:column;gap:8px">
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <span style="font-size:13px;color:#666">快捷键</span>
+                        <span title="默认使用外挂工具常见的单键 F8/F9，避开浏览器常见快捷键。点输入框后直接按想设置的键；在输入框、文本框、下拉框和可编辑区域内不会触发快捷键。" style="cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
+                    </div>
+                    <div style="display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center">
+                        <span style="font-size:13px;color:#888">暂停/恢复</span>
+                        <input id="glm-hk-pause" value="${pauseHotkey()}" readonly style="width:120px;padding:5px 8px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center;background:#fafafa;cursor:pointer">
+                        <span style="font-size:13px;color:#888">自动点击订阅</span>
+                        <input id="glm-hk-sub" value="${autoClickSubHotkey()}" readonly style="width:120px;padding:5px 8px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center;background:#fafafa;cursor:pointer">
+                    </div>
+                    <div style="font-size:12px;color:#999">推荐：F8/F9、Insert/Home/End。避免 F5/F11/F12、Ctrl/Alt 组合和输入法快捷键。</div>
                 </div>
             </div>
             <div style="display:flex;justify-content:space-between;gap:10px">
@@ -917,6 +1240,18 @@
         document.body.appendChild(ov);
         const getPkgs = buildTransferBox(document.getElementById('glm-wp'), PKGS_MAP, CFG.PACKAGES_PRIORITY, '套餐优先级');
         const getTabs = buildTransferBox(document.getElementById('glm-wt'), TABS_MAP, CFG.TABS_PRIORITY, '订阅周期优先级');
+        function bindHotkeyInput(input) {
+            input.title = '点击后按键录入';
+            input.addEventListener('keydown', e => {
+                e.preventDefault();
+                e.stopPropagation();
+                const hk = hotkeyFromEvent(e);
+                if (hk) input.value = hk;
+            });
+            input.addEventListener('focus', () => input.select());
+        }
+        bindHotkeyInput(panel.querySelector('#glm-hk-pause'));
+        bindHotkeyInput(panel.querySelector('#glm-hk-sub'));
         panel.querySelector('#glm-cc').onclick = () => ov.remove();
         panel.querySelector('#glm-multi').onclick = () => { openMultipleWindows(); };
         panel.querySelector('#glm-cs').onclick = () => {
@@ -936,10 +1271,15 @@
                 CAPTCHA_CLICK_DELAY_MIN_MS: parseInt(panel.querySelector('#glm-cdmin').value, 10),
                 CAPTCHA_CLICK_DELAY_MAX_MS: parseInt(panel.querySelector('#glm-cdmax').value, 10),
                 CAPTCHA_CLICK_DELAY_JITTER_PERCENT: CFG.CAPTCHA_CLICK_DELAY_JITTER_PERCENT,
+                CAPTCHA_FIRST_CLICK_DELAY_MIN_MS: parseInt(panel.querySelector('#glm-fcdmin').value, 10),
+                CAPTCHA_FIRST_CLICK_DELAY_MAX_MS: parseInt(panel.querySelector('#glm-fcdmax').value, 10),
                 RUSH_ENABLED: panel.querySelector('#glm-re').checked,
                 RUSH_TARGET_HOUR: parseInt(panel.querySelector('#glm-rh').value, 10),
                 RUSH_TARGET_MIN: parseInt(panel.querySelector('#glm-rm').value, 10),
                 RUSH_TARGET_SEC: parseInt(panel.querySelector('#glm-rs').value, 10),
+                RUSH_RELEASE_ADVANCE_MS: CFG.RUSH_RELEASE_ADVANCE_MS,
+                HOTKEY_PAUSE: normalizeHotkeyString(panel.querySelector('#glm-hk-pause').value, 'F8'),
+                HOTKEY_AUTO_CLICK_SUB: normalizeHotkeyString(panel.querySelector('#glm-hk-sub').value, 'F9'),
                 SAFE_DEFAULTS_VERSION,
             });
             ov.remove(); alert('已保存，即将刷新。'); location.reload();
@@ -951,6 +1291,10 @@
     // ═══════════════════════════════════════════════════════════════════════════
     function tick() {
         if (state === 'DONE') return;
+        if (runtimePaused) {
+            setBar(`⏸️ 脚本已暂停。${pauseHotkey()} 恢复。`, '#722ed1');
+            return;
+        }
         if (window.__glmRushConfirmed && window.__glmRushDialogSeen && !getPayDialog()) {
             window.__glmRushConfirmed = 0;
             window.__glmRushDialogSeen = 0;
@@ -978,7 +1322,7 @@
             taskTarget = { tab, pkg }; taskPhase = 'IDLE'; taskRLCount = 0;
             soldOutHits[`${tab}-${pkg}`] = 0;
             setS(tab, pkg, 0); state = 'TASK_UNIT';
-            setBar(`🎯 发现可购！${TABS_MAP[tab]} · ${PKGS_MAP[pkg]}，即将点击...`, '#389e0d');
+            setBar(`🎯 发现可购！${TABS_MAP[tab]} · ${PKGS_MAP[pkg]}，${readyModeText()}`, CFG.RUSH_ENABLED && !CFG.AUTO_CLICK_SUB ? '#722ed1' : '#389e0d');
             return;
         }
         if (isBusy(b)) {
@@ -993,8 +1337,10 @@
     }
     function onSweepDone() {
         if (sweepBusyCount >= scanQueue.length) {
-            setBar('⚠️ 所有套餐当前都在系统繁忙，刷新页面重试...', '#d46b08');
-            setTimeout(() => location.replace(GLM_CODING_URL()), 1500);
+            // 所有套餐都显示"抢购人数过多/请刷新"——不自动刷新（自动刷新太激进会触发更严重风控），
+            // 停下来让用户手动刷新页面，直到看到"特惠订阅"按钮再继续。
+            state = 'DONE';
+            setBar('🛑 所有套餐显示「抢购人数过多，请刷新再试」。请手动刷新页面（F5），直到看到「特惠订阅」按钮。自动刷新容易触发更严重风控。', '#ff4d4f');
             return;
         }
         if (!sweepRestocks.length) {
@@ -1033,12 +1379,18 @@
                 setBar(`⏳ 等待按钮就绪... ${TABS_MAP[tab]} · ${PKGS_MAP[pkg]}`, '#d46b08');
                 return;
             }
-            if (!CFG.AUTO_CLICK_SUB) {
-                showPayAlarm();
-                setBar(`🎯 <b>发现可购！${TABS_MAP[tab]} · ${PKGS_MAP[pkg]}</b>，请手动点击订阅`, '#389e0d');
+            const rushReached = isRushTargetReached();
+            if (!CFG.AUTO_CLICK_SUB && !rushReached) {
+                if (CFG.RUSH_ENABLED) {
+                    const remaining = Math.max(0, getRushRemainingMs());
+                    setBar(`🎯 <b>发现可购！${TABS_MAP[tab]} · ${PKGS_MAP[pkg]}</b>，冲刺模式等待目标时间 <b>${fmt(remaining)}</b>；也可按 ${autoClickSubHotkey()} 手动开启自动点击`, '#722ed1');
+                } else {
+                    setBar(`🎯 <b>发现可购！${TABS_MAP[tab]} · ${PKGS_MAP[pkg]}</b>，默认不自动点击；请手动点击或按 ${autoClickSubHotkey()} 开启`, '#389e0d');
+                }
                 return;
             }
             PS.result = null; PS.inProgress = true;
+            try { taskClickCaptchaSeq = GM_getValue('glm_captcha_seen_seq', 0) | 0; } catch (e) { taskClickCaptchaSeq = 0; }
             b.click(); taskClickTime = Date.now(); taskPhase = 'WAITING';
             setBar(`🔄 已点击，接口重试中... ${TABS_MAP[tab]} · ${PKGS_MAP[pkg]}（限流 ${taskRLCount}/${MAX_RL}）`, '#d46b08');
             return;
@@ -1132,13 +1484,19 @@
             }
             const elapsed = Date.now() - taskClickTime;
             const prefix = lastCloseReason ? `${lastCloseReason} → ` : '';
+            // 极简逻辑：点击后只等 preview 响应（PS.result 被设置）或弹窗出现。
+            // 不判断验证码/prompt 状态——那些和主流程无关，识别完会自然推动 preview。
+            // 5 秒内没有任何结果（preview 没回/弹窗没出）= 卡住了，立即重试点订阅。
             if (PS.inProgress) {
                 setBar(`${prefix}⏳ ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 接口请求中... (${(elapsed/1000).toFixed(1)}s)`, '#1677ff');
             } else {
-                setBar(`${prefix}🔐 ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 等待验证码... (${(elapsed/1000).toFixed(1)}s)`, '#1677ff');
+                setBar(`${prefix}🔐 ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 等待响应... (${(elapsed/1000).toFixed(1)}s)`, '#1677ff');
             }
-            if (elapsed > MODAL_WAIT) {
-                if (isSoldOut(b)) exitTask(); else taskPhase = 'IDLE';
+            if (elapsed > 10000) {
+                // 10 秒没结果 = 卡住（验证码没弹/没识别完/被拦），重试点订阅。
+                // 10 秒兜底：正常识别（含老 CPU）5-8 秒够，超 10 秒就是卡了。
+                setBar(`⚡ ${TABS_MAP[tab]}·${PKGS_MAP[pkg]} 超时，重试点订阅...`, '#d4380d');
+                taskPhase = 'IDLE';
             }
         }
     }
@@ -1176,6 +1534,8 @@
         return true;
     }
     if (checkLogin()) {
+        setBar(`✅ 脚本已加载，${readyModeText()}`, CFG.RUSH_ENABLED && !CFG.AUTO_CLICK_SUB ? '#722ed1' : '#1677ff');
+        calibrateRushLatency();
         setInterval(tick, CFG.CHECK_INTERVAL);
         const _startDOM = () => {
             setInterval(forceEnableButtons, 500);
@@ -1200,19 +1560,24 @@
             const ph = parseInt(cfg.RUSH_TARGET_HOUR, 10);
             const pm = parseInt(cfg.RUSH_TARGET_MIN, 10);
             const ps = parseInt(cfg.RUSH_TARGET_SEC, 10);
+            const manualAdvance = Math.max(0, parseInt(cfg.RUSH_RELEASE_ADVANCE_MS, 10) || 0);
+            const latencyRaw = GM_getValue('glm_rush_latency_v1', '{}');
+            const latency = JSON.parse(latencyRaw || '{}');
+            const latencyFresh = latency && Number.isFinite(Number(latency.advanceMs)) && Date.now() - Number(latency.at || 0) < 10 * 60 * 1000;
+            const releaseAdvanceMs = manualAdvance > 0 ? manualAdvance : (latencyFresh ? Math.max(0, Math.min(180, Number(latency.advanceMs))) : 0);
             return {
                 enabled: cfg.RUSH_ENABLED === true,
-                targetHour: Number.isFinite(ph) ? ph : 9,
-                targetMin: Number.isFinite(pm) ? pm : 59,
-                targetSec: Number.isFinite(ps) ? ps : 58,
+                targetHour: Number.isFinite(ph) ? ph : 10,
+                targetMin: Number.isFinite(pm) ? pm : 0,
+                targetSec: Number.isFinite(ps) ? ps : 0,
                 holdWindowMs: Math.max(0, parseInt(cfg.RUSH_HOLD_WINDOW_MS, 10) || 10000),
-                releaseAdvanceMs: Math.max(0, parseInt(cfg.RUSH_RELEASE_ADVANCE_MS, 10) || 40),
+                releaseAdvanceMs: releaseAdvanceMs,
                 staggerMs: 2000,
                 pollInterval: 50,
                 pollTimeout: 20000,
             };
         } catch {
-            return { enabled: false, targetHour: 9, targetMin: 59, targetSec: 58, holdWindowMs: 10000, releaseAdvanceMs: 40, staggerMs: 2000, pollInterval: 50, pollTimeout: 20000 };
+            return { enabled: false, targetHour: 10, targetMin: 0, targetSec: 0, holdWindowMs: 10000, releaseAdvanceMs: 0, staggerMs: 2000, pollInterval: 50, pollTimeout: 20000 };
         }
     })();
     const CAPTCHA_CFG = (() => {
@@ -1280,6 +1645,8 @@
             maxGapMs: clampCaptchaInt(config.maxGapMs, 1, 10000, 500),
             jitterPercent: clampCaptchaInt(config.jitterPercent, 0, 1000, 20),
             stepDelays: stepDelays && stepDelays.length ? stepDelays : null,
+            firstClickMinMs: clampCaptchaInt(config.firstClickMinMs, 0, 10000, 150),
+            firstClickMaxMs: clampCaptchaInt(config.firstClickMaxMs, 0, 10000, 300),
         };
     }
     function getCaptchaDirectDelayConfig() {
@@ -1289,6 +1656,8 @@
             minGapMs: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_MIN_MS,
             maxGapMs: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_MAX_MS,
             jitterPercent: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_JITTER_PERCENT,
+            firstClickMinMs: Number.isFinite(parseInt(CAPTCHA_CFG.CAPTCHA_FIRST_CLICK_DELAY_MIN_MS, 10)) ? parseInt(CAPTCHA_CFG.CAPTCHA_FIRST_CLICK_DELAY_MIN_MS, 10) : 150,
+            firstClickMaxMs: Number.isFinite(parseInt(CAPTCHA_CFG.CAPTCHA_FIRST_CLICK_DELAY_MAX_MS, 10)) ? parseInt(CAPTCHA_CFG.CAPTCHA_FIRST_CLICK_DELAY_MAX_MS, 10) : 300,
         });
         var override = readCaptchaDirectDelayOverride();
         if (!override) return baseConfig;
@@ -1299,6 +1668,8 @@
             maxGapMs: override.maxGapMs != null ? override.maxGapMs : baseConfig.maxGapMs,
             jitterPercent: override.jitterPercent != null ? override.jitterPercent : baseConfig.jitterPercent,
             stepDelays: Array.isArray(override.stepDelays) ? override.stepDelays : baseConfig.stepDelays,
+            firstClickMinMs: override.firstClickMinMs != null ? override.firstClickMinMs : baseConfig.firstClickMinMs,
+            firstClickMaxMs: override.firstClickMaxMs != null ? override.firstClickMaxMs : baseConfig.firstClickMaxMs,
         });
     }
     function getWindowIndex() {
@@ -1314,18 +1685,73 @@
     }
     const captchaSession = {
         lastText: '',
+        lastBgUrl: '',
         sent: false,
         state: 'idle',
+        // 失败保护：错一次冷却一会、连续错够 N 次直接停手，避免被腾讯 SDK 自我重置
+        // 的循环吸进 50ms 一发的自激振荡（一直打同一张图把后端打爆）。
+        failCount: 0,
+        failBgUrl: '',
+        cooldownUntil: 0,
+        stopped: false,
     };
+    const CAPTCHA_FAIL_COOLDOWN_MS = 1500;   // 单次失败冷却 1.5 秒
+    const CAPTCHA_FAIL_HARD_LIMIT = 3;       // 同一张图连续失败 ≥3 次后彻底停手
+    // rush 黄金窗口：到点后 holdWindowMs 内。窗口期内失败只冷却不 hard-stop，
+    // 保证 10:00 抢购黄金窗口不会被提前累积的失败熔断焊死（导致到点不识别不点确定）。
+    function isRushWindowActive() {
+        if (!RUSH_CFG.enabled) return false;
+        var remaining = getTargetTimestamp() - Date.now();
+        return remaining <= RUSH_CFG.holdWindowMs;
+    }
     function getCaptchaLastText() { return captchaSession.lastText; }
     function setCaptchaLastText(text) { captchaSession.lastText = text || ''; }
+    function getCaptchaLastBgUrl() { return captchaSession.lastBgUrl; }
+    function setCaptchaLastBgUrl(url) { captchaSession.lastBgUrl = url || ''; }
     function isCaptchaSent() { return captchaSession.sent === true; }
     function setCaptchaSent(sent) { captchaSession.sent = sent === true; }
     function getCaptchaState() { return captchaSession.state; }
     function setCaptchaState(state) { captchaSession.state = state; }
+    function isCaptchaStopped() { return captchaSession.stopped === true; }
+    function inCaptchaCooldown() { return Date.now() < captchaSession.cooldownUntil; }
+    // 失败计数绑定到"同一张图"：换图（腾讯 SDK 重置、换新挑战、rush 窗口新验证码）时重置 failCount，
+    // 避免跨图累积误伤；自激振荡（同一张图反复开火）只在 failBgUrl 不变时才累计。
+    function noteCaptchaFailure(failBgUrl) {
+        if (failBgUrl && captchaSession.failBgUrl && failBgUrl !== captchaSession.failBgUrl) {
+            captchaSession.failCount = 0;
+            captchaSession.stopped = false;
+        }
+        captchaSession.failBgUrl = failBgUrl || '';
+        captchaSession.failCount += 1;
+        captchaSession.cooldownUntil = Date.now() + CAPTCHA_FAIL_COOLDOWN_MS;
+        // rush 黄金窗口（到点后 holdWindowMs 内）只冷却不 hard-stop，保证窗口期不会被焊死。
+        if (captchaSession.failCount >= CAPTCHA_FAIL_HARD_LIMIT && !isRushWindowActive()) {
+            captchaSession.stopped = true;
+            console.warn('[captcha] 连续失败 ' + captchaSession.failCount + ' 次（同一图），自动验证已停止；'
+                + '请手动完成本次验证码，然后刷新页面或重新打开抢购弹窗以恢复自动模式。');
+        } else if (captchaSession.failCount >= CAPTCHA_FAIL_HARD_LIMIT) {
+            console.warn('[captcha] 失败 ' + captchaSession.failCount + ' 次，rush 窗口期内仅冷却不熔断；'
+                + '冷却 ' + CAPTCHA_FAIL_COOLDOWN_MS + 'ms 后再试');
+        } else {
+            console.warn('[captcha] 失败 ' + captchaSession.failCount + '/' + CAPTCHA_FAIL_HARD_LIMIT
+                + '，冷却 ' + CAPTCHA_FAIL_COOLDOWN_MS + 'ms 后再试');
+        }
+    }
+    function noteCaptchaSuccess() {
+        captchaSession.failCount = 0;
+        captchaSession.cooldownUntil = 0;
+        captchaSession.failBgUrl = '';
+        captchaSession.stopped = false;
+    }
     function resetCaptchaSession() {
         setCaptchaSent(false);
         setCaptchaLastText('');
+        setCaptchaLastBgUrl('');
+        // 完整重置：清掉熔断状态，否则一旦 hard-stop 过，到点后验证码也再不识别（rush 卡点根因）。
+        captchaSession.failCount = 0;
+        captchaSession.cooldownUntil = 0;
+        captchaSession.failBgUrl = '';
+        captchaSession.stopped = false;
     }
     function serverRequest(method, path, data) {
         function doFetch() {
@@ -1350,11 +1776,28 @@
                         try { resolve(JSON.parse(r.responseText)); }
                         catch { resolve({ raw: r.responseText }); }
                     },
-                    onerror: (e) => reject(new Error('GM_xmlhttpRequest error: ' + e)),
+                    onerror: (e) => {
+                        // GM onerror 的 e 通常是 ProgressEvent 或 Tampermonkey 的错误对象，
+                        // 用 status/statusText 给出可读信息，便于诊断
+                        var info = 'unknown';
+                        if (e && typeof e === 'object') {
+                            info = 'status=' + (e.status || 0) +
+                                   ' statusText=' + (e.statusText || '') +
+                                   ' error=' + (e.error || '');
+                        }
+                        reject(new Error('GM_xmlhttpRequest error: ' + info));
+                    },
                 });
             });
         }
-        return doFetch().catch(() => doGM());
+        // Chrome 130+ 的 Local Network Access 在某些配置下会硬拦 https → loopback 的
+        // fetch，preflight 都发不出去。fetch 路径每次都报 "Permission was denied for
+        // the loopback address space"，等 catch 进 GM 时业务上下文可能已经过期。
+        // 因此 localhost 请求**优先走 GM_xmlhttpRequest**（扩展进程，绕过页面网络栈），
+        // 只有当 GM 不可用（非 Tampermonkey 环境）时才退回 fetch。
+        return (typeof GM_xmlhttpRequest === 'function')
+            ? doGM().catch(() => doFetch())
+            : doFetch();
     }
     function pollResult(ts) {
         return new Promise((resolve, reject) => {
@@ -1526,6 +1969,10 @@
         if (!text) return false;
         if (/(\u62D6\u52A8|\u62FC\u56FE|\u6ED1\u5757)/.test(text)) return false;
         if (/^\u8BF7\u4F9D\u6B21\u70B9\u51FB/.test(text)) return true;
+        // 排除说明性/标题性文字（"验证码""安全验证""请点击图中文字"等），
+        // 它们也是 3-8 个汉字，会被下面的兜底分支误判为目标字，导致后端
+        // 在点选图里找不到这些"字" → detected 0 boxes。
+        if (/\u9A8C\u8BC1\u7801|\u9A8C\u8BC1|\u5B89\u5168\u9A8C\u8BC1|\u70B9\u51FB\u8FDB\u884C|\u70B9\u51FB\u56FE\u4E2D|\u56FE\u5F62\u9A8C\u8BC1|\u8BF7\u70B9\u51FB|\u5B8C\u6210\u9A8C\u8BC1|\u8FDB\u884C\u9A8C\u8BC1/.test(text)) return false;
         var chars = (text.match(/[\u4e00-\u9fff]/g) || []);
         return chars.length >= 3 && chars.length <= 8;
     }
@@ -1779,7 +2226,10 @@
             '.tencent-captcha-dy__header-text',
             '.tencent-captcha-dy__header-title-wrap .tencent-captcha-dy__header-text',
             "div[class*='tencent-captcha'] div[class*='header-text']",
-            '[aria-label]',
+            // aria-label 兜底：限定在腾讯验证码容器内，避免抓到页面其它元素（如按钮
+            // aria-label="验证码"、标题等）的说明性文字，导致后端 0 boxes。
+            '.tencent-captcha-dy[aria-label]',
+            '[class*="tencent-captcha-dy__"][aria-label]',
         ];
         for (var i = 0; i < selectors.length; i++) {
             var el = document.querySelector(selectors[i]);
@@ -1970,6 +2420,15 @@
         var rect = bgEl.getBoundingClientRect();
         var plan = buildCaptchaDirectClickPlan(rect, result, schedule);
         console.log('[captcha-direct-page] click result:', JSON.stringify(result).substring(0, 260));
+        // 首击前延迟：验证码 DOM 渲染/动画需要时间，OCR 太快（v6 几十 ms）会导致第一击落空。
+        // 用随机区间，避免固定值被识别为机器。
+        var fcMin = Math.min(schedule.firstClickMinMs || 0, schedule.firstClickMaxMs || 0);
+        var fcMax = Math.max(schedule.firstClickMinMs || 0, schedule.firstClickMaxMs || 0);
+        if (fcMax > 0) {
+            var firstDelay = randCaptchaInt(fcMin, fcMax);
+            console.log('[captcha-direct-page] first-click delay: ' + firstDelay + 'ms');
+            await sleepCaptchaDirectClickGap(firstDelay);
+        }
         for (var i = 0; i < plan.steps.length; i++) {
             await runCaptchaDirectClickStep(bgEl, plan.steps[i], i < plan.steps.length - 1);
         }
@@ -1978,8 +2437,13 @@
     async function finishCaptchaDirectConfirm() {
         if (RUSH_CFG.enabled) {
             var nowTs = Date.now();
+            var targetTs = getTargetTimestamp();
+            var remaining = targetTs - nowTs;
+            if (remaining > RUSH_CFG.holdWindowMs) {
+                console.log('[captcha-rush] outside hold window, skip auto confirm for ' + Math.ceil(remaining / 1000) + 's');
+                return;
+            }
             if (shouldHoldRushConfirm(nowTs)) {
-                var targetTs = getTargetTimestamp();
                 console.log('[captcha-rush] hold confirm for ' + Math.max(0, targetTs - nowTs).toFixed(0) + 'ms');
                 await waitForRushRelease();
                 console.log('[captcha-rush] release confirm');
@@ -2005,9 +2469,14 @@
             var result = await requestCaptchaDirectResult(payloadText, target.bgUrl);
             await clickCaptchaDirectCoords(target.bgEl, result);
             await finishCaptchaDirectConfirm();
+            noteCaptchaSuccess();
         } catch (e) {
             console.error('[captcha-direct-page] error:', e);
-            resetCaptchaSession();
+            // 注意：这里**不要**调 resetCaptchaSession()。原来的逻辑会立刻把 sent 清成
+            // false，下一个 50ms tick 又对同一张图开火，形成自激振荡（被腾讯 SDK 的自我
+            // 重置吸进死循环）。改为 noteCaptchaFailure 触发冷却 + 累计计数，连续失败
+            // 够多次后干脆停手等用户介入。传入 bgUrl 让计数绑定到"同一张图"，换图即重置。
+            noteCaptchaFailure(bgUrl);
         } finally {
             setCaptchaState('idle');
         }
@@ -2032,9 +2501,11 @@
         return { found: found, bgEl: bgEl, bgUrl: bgUrl, payloadText: payloadText };
     }
     function syncCaptchaChallengeText(challenge) {
-        if (challenge.payloadText !== getCaptchaLastText()) {
+        if (challenge.payloadText !== getCaptchaLastText() || challenge.bgUrl !== getCaptchaLastBgUrl()) {
             setCaptchaLastText(challenge.payloadText);
+            setCaptchaLastBgUrl(challenge.bgUrl);
             setCaptchaSent(false);
+            try { GM_setValue('glm_captcha_seen_seq', (GM_getValue('glm_captcha_seen_seq', 0) | 0) + 1); } catch (e) {}
             console.log('[captcha] sel:', challenge.found.selector);
             console.log('[captcha] raw:', challenge.found.text);
             console.log('[captcha] prompt:', challenge.payloadText);
@@ -2049,6 +2520,8 @@
         });
     }
     async function checkCaptchaPrompt() {
+        if (isCaptchaStopped()) return;            // 连续失败被熔断后彻底停手
+        if (inCaptchaCooldown()) return;           // 失败冷却中，不开新一发
         if (getCaptchaState() === 'solving') return;
         var challenge = collectCaptchaChallenge();
         if (!challenge) return;

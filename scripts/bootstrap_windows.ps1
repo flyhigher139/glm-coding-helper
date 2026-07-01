@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("auto", "cpu", "gpu", "both")]
     [string]$Target = "auto",
     [switch]$Recreate,
@@ -6,8 +6,14 @@ param(
     [switch]$NoSmokeTest,
     [string]$PythonVersion = "3.12",
     [string]$InstallerUrl = "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe",
-    [string[]]$PipArg = @()
+    # 接收分号分隔的字符串（如 "-i;https://pypi.tuna.tsinghua.edu.cn/simple"），
+    # 避免 PowerShell 把 "-i" 等 dash 开头的值当成参数名吞掉
+    [string]$PipArg = ""
 )
+
+# 还原为参数数组
+$PipArgArray = @()
+if ($PipArg) { $PipArgArray = $PipArg -split ";" }
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -93,9 +99,9 @@ $argsList = @("scripts\setup_backend.py", "--target", $Target)
 if ($Recreate) { $argsList += "--recreate" }
 if ($SkipInstall) { $argsList += "--skip-install" }
 if ($NoSmokeTest) { $argsList += "--no-smoke-test" }
-foreach ($arg in $PipArg) {
-    $argsList += "--pip-arg"
-    $argsList += $arg
+foreach ($arg in $PipArgArray) {
+    # 用 --pip-arg=VALUE 等号形式，避免 argparse 把 -i / --index-url 等 dash 开头的值误判为新选项
+    $argsList += "--pip-arg=$arg"
 }
 
 & $pythonExe @argsList

@@ -27,12 +27,19 @@ if str(ROOT) not in sys.path:
 
 # ── 配置 ───────────────────────────────────────────────
 BACKEND_HOST = "127.0.0.1"
-BACKEND_PORT = 8888
+BACKEND_PORT = int(os.environ.get("CNCAPTCHA_PORT", "8888"))
 BACKEND_URL = f"http://{BACKEND_HOST}:{BACKEND_PORT}"
 POLL_HEALTH_MS = 1000
 POLL_RECENT_MS = 500
 MAX_LOG_LINES = 500
 MAX_RECENT_SHOWN = 20
+BACKEND_SHUTDOWN_TIMEOUT = 30
+CONFIG_PATH = ROOT / "config.json"
+OCR_MODEL_CHOICES = {
+    "极速模式（v6 tiny，推荐）": "PP-OCRv6_tiny_rec",
+    "精准模式（v6 medium）": "PP-OCRv6_medium_rec",
+    "稳定模式（v5 server）": "PP-OCRv5_server_rec",
+}
 
 # 颜色
 BG = "#f0f2f5"
@@ -42,6 +49,16 @@ FG_WARN = "#faad14"
 FG_ERROR = "#ff4d4f"
 FG_INFO = "#1890ff"
 FG_GREY = "#8c8c8c"
+
+
+def _platform_fonts() -> tuple[str, str]:
+    """返回 (UI 字体, 等宽字体)，按系统选择以保证中文可读。"""
+    if sys.platform == "darwin":
+        return "PingFang SC", "Menlo"
+    return "Microsoft YaHei UI", "Consolas"
+
+
+UI_FONT, MONO_FONT = _platform_fonts()
 
 state = {
     "backend_proc": None,
@@ -53,6 +70,31 @@ state = {
                "workers": 0, "n_yolo": 0, "n_ocr": 0, "port": BACKEND_PORT},
     "port": BACKEND_PORT,
 }
+
+
+def _load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_config(updates: dict) -> None:
+    data = _load_config()
+    data.update(updates)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _ocr_model_label(model_name: str) -> str:
+    for label, value in OCR_MODEL_CHOICES.items():
+        if value == model_name:
+            return label
+    return f"自定义：{model_name}" if model_name else "未设置"
 
 
 def _read_proc_stdout(proc: subprocess.Popen):
@@ -72,7 +114,7 @@ def _read_proc_stdout(proc: subprocess.Popen):
             pass
 
 
-def _http_get_json(path: str, timeout: float = 1.0):
+def _http_get_json(path: str, timeout: float = 3.0):
     try:
         with urllib.request.urlopen(BACKEND_URL + path, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
@@ -97,13 +139,13 @@ class App:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TLabel", background=BG, font=("Microsoft YaHei UI", 10))
-        style.configure("Status.TLabel", font=("Microsoft YaHei UI", 12, "bold"))
-        style.configure("Big.TLabel", font=("Microsoft YaHei UI", 14, "bold"))
-        style.configure("Ok.TLabel", foreground=FG_SUCCESS, font=("Microsoft YaHei UI", 11, "bold"))
-        style.configure("Warn.TLabel", foreground=FG_WARN, font=("Microsoft YaHei UI", 11, "bold"))
-        style.configure("Err.TLabel", foreground=FG_ERROR, font=("Microsoft YaHei UI", 11, "bold"))
-        style.configure("Info.TLabel", foreground=FG_INFO, font=("Microsoft YaHei UI", 11, "bold"))
+        style.configure("TLabel", background=BG, font=(UI_FONT, 10))
+        style.configure("Status.TLabel", font=(UI_FONT, 12, "bold"))
+        style.configure("Big.TLabel", font=(UI_FONT, 14, "bold"))
+        style.configure("Ok.TLabel", foreground=FG_SUCCESS, font=(UI_FONT, 11, "bold"))
+        style.configure("Warn.TLabel", foreground=FG_WARN, font=(UI_FONT, 11, "bold"))
+        style.configure("Err.TLabel", foreground=FG_ERROR, font=(UI_FONT, 11, "bold"))
+        style.configure("Info.TLabel", foreground=FG_INFO, font=(UI_FONT, 11, "bold"))
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -162,7 +204,7 @@ class App:
         # 底部：实时日志
         bot = ttk.LabelFrame(self.root, text="后端日志（stdout）", padding="6")
         bot.pack(fill=tk.BOTH, expand=False, padx=12, pady=(0, 8))
-        self.log_box = tk.Text(bot, height=10, font=("Consolas", 9),
+        self.log_box = tk.Text(bot, height=10, font=(MONO_FONT, 9),
                                bg="#1e1e1e", fg="#d4d4d4", insertbackground="#d4d4d4",
                                relief=tk.FLAT, wrap=tk.NONE)
         self.log_box.tag_configure("info", foreground="#d4d4d4")
@@ -294,7 +336,9 @@ class App:
             try:
                 proc.terminate()
                 try:
-                    proc.wait(timeout=3)
+                    # 后端会依次正常停止 YOLO 和 OCR worker；给它足够时间
+                    # 避免父进程过早退出，再次强制终止 Paddle 子进程。
+                    proc.wait(timeout=BACKEND_SHUTDOWN_TIMEOUT)
                 except subprocess.TimeoutExpired:
                     proc.kill()
             except Exception:

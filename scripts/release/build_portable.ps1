@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputDir = "dist",
     [switch]$NoZip
 )
@@ -15,8 +15,8 @@ if (-not (Test-Path $VenvPython)) {
     throw "Missing .venv_paddle. Run one-click-start.cmd first."
 }
 
-Write-Host "Checking portable CPU environment..."
-& $VenvPython -c "import ultralytics, paddleocr, paddlex, cv2, PIL, numpy; print('portable imports ok')"
+Write-Host "Checking local CPU environment before packaging..."
+& $VenvPython -c "import ultralytics, paddleocr, paddlex, cv2, PIL, numpy; print('local imports ok')"
 if ($LASTEXITCODE -ne 0) {
     throw "The local .venv_paddle is incomplete. Run one-click-start.cmd again, then rerun this script."
 }
@@ -40,16 +40,18 @@ $Include = @(
     "glm-coding-helper.user.js",
     "scripts\userscripts\glm-coding-captcha-direct.user.js",
     "one-click-start.cmd",
-    "start-backend-pipeline-gui.cmd",
-    "start-backend-pipeline-gui.ps1",
+    "one-click-start.command",
+    "one-click-start.sh",
+    "start-backend-pipeline-gui.command",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
     "requirements-backend-cpu.txt",
+    "requirements-backend-gpu.txt",
     "scripts",
+    "docs",
     "models",
     "backend",
-    ".venv_paddle",
     ".paddlex_cache_cpu",
     ".paddle_home"
 )
@@ -84,10 +86,21 @@ $Guide = @"
 GLM Coding Helper portable CPU package
 
 1. Install or update Tampermonkey script from glm-coding-helper.user.js.
-2. Double-click one-click-start.cmd to install the environment on first run, or start-backend-pipeline-gui.cmd to launch the pipeline backend with GUI.
-3. Open the GLM Coding page from your normal browser session.
+2. Double-click one-click-start.cmd on first run so the backend environment is created on this computer.
+3. After that, use start-backend-pipeline-gui.cmd to launch the pipeline backend with GUI.
+4. Open the GLM Coding page from your normal browser session.
 
-This package includes the CPU Python environment and local model files.
+macOS:
+1. Run chmod +x one-click-start.command start-backend-pipeline-gui.command scripts/setup_backend_macos.sh if Finder blocks the scripts.
+2. Double-click one-click-start.command on first run, then use start-backend-pipeline-gui.command.
+
+Linux:
+1. This portable package is built for Windows CPU usage. Linux users should prefer glm-coding-helper-online-installer-*.zip.
+2. If you use this zip on Linux anyway: chmod +x one-click-start.sh scripts/setup_backend_linux.sh && ./one-click-start.sh
+3. See docs/linux-setup.md for Python 3.12 / uv / NVIDIA GPU requirements.
+
+This package includes local model/cache files, but it does not ship a copied Windows venv.
+Copied venvs are not portable and may point at the packager's Python path.
 "@
 Set-Content -LiteralPath (Join-Path $PackageDir "PORTABLE_README.txt") -Value $Guide -Encoding UTF8
 
@@ -108,13 +121,17 @@ if (-not $NoZip) {
         & $SevenZipA.Source a -tzip $ZipPath $PackageDir | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "7za failed with exit code $LASTEXITCODE" }
     } else {
-        Push-Location $OutRoot
-        try {
-            tar -a -cf "$PackageName.zip" $PackageName
-            if ($LASTEXITCODE -ne 0) { throw "tar zip failed with exit code $LASTEXITCODE" }
-        } finally {
-            Pop-Location
-        }
+        # 用 Python zipfile 打包（最可靠，无 Windows MAX_PATH 限制）
+        $py = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $py) { $py = Get-Command python3 -ErrorAction SilentlyContinue }
+        if (-not $py) { throw "Neither 7z nor python found; cannot create zip" }
+        $env:_ZIP_OUT = $ZipPath
+        $env:_ZIP_SRC = $PackageDir
+        # 打包时强制 .sh/.command 为 LF 行尾（避免 macOS/Linux /bin/bash^M）
+        python -c "import os,zipfile;zo=os.environ['_ZIP_OUT'];zs=os.environ['_ZIP_SRC'];z=zipfile.ZipFile(zo,'w',zipfile.ZIP_DEFLATED);[z.writestr(os.path.relpath(os.path.join(r,f),zs), open(os.path.join(r,f),'rb').read().replace(b'\r\n',b'\n')) if f.lower().endswith(('.sh','.command')) else z.write(os.path.join(r,f),os.path.relpath(os.path.join(r,f),zs)) for r,_,fs in os.walk(zs) for f in fs];z.close()"
+        if ($LASTEXITCODE -ne 0) { throw "python zipfile failed with exit code $LASTEXITCODE" }
+        if (-not (Test-Path $ZipPath)) { throw "python failed to create $ZipPath" }
+        Remove-Item Env:_ZIP_OUT, Env:_ZIP_SRC -ErrorAction SilentlyContinue
     }
     $ZipSize = (Get-Item $ZipPath).Length
     Write-Host ("Zip size: {0:N1} MB" -f ($ZipSize / 1MB))

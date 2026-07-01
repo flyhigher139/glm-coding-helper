@@ -11,6 +11,7 @@ import json
 import base64
 import time
 import asyncio
+import math
 import urllib.request
 import multiprocessing as mp
 import threading
@@ -48,7 +49,12 @@ def _smart_defaults():
     return yolo, ocr
 
 _smart_yolo, _smart_ocr = _smart_defaults()
-_DEFAULT = {"workers": _smart_yolo, "ocr_workers": _smart_ocr, "port": 8888}
+_DEFAULT = {
+    "workers": _smart_yolo,
+    "ocr_workers": _smart_ocr,
+    "port": 8888,
+    "ocr_model": "PP-OCRv6_tiny_rec",
+}
 
 if CONFIG_PATH.exists():
     try:
@@ -60,12 +66,21 @@ else:
     _cfg = {}
 N_YOLO = max(1, int(_cfg.get("workers", _DEFAULT["workers"])))
 N_OCR  = max(1, int(_cfg.get("ocr_workers", _DEFAULT["ocr_workers"])))
-PORT   = max(1, int(_cfg.get("port", _DEFAULT["port"])))
+HOST   = os.environ.get("CNCAPTCHA_HOST", "0.0.0.0")
+PORT   = max(1, int(os.environ.get("CNCAPTCHA_PORT", _cfg.get("port", _DEFAULT["port"]))))
+OCR_MODEL = (
+    os.environ.get("CNCAPTCHA_CPU_OCR_MODEL")
+    or os.environ.get("GLM_OCR_MODEL")
+    or str(_cfg.get("ocr_model", _DEFAULT["ocr_model"]))
+).strip() or _DEFAULT["ocr_model"]
+os.environ["CNCAPTCHA_CPU_OCR_MODEL"] = OCR_MODEL
+os.environ["GLM_OCR_MODEL"] = OCR_MODEL
 
 if not CONFIG_PATH.exists():
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump({"workers": N_YOLO, "ocr_workers": N_OCR, "port": PORT,
+                        "ocr_model": OCR_MODEL,
                         "_auto": True, "_cores": psutil.cpu_count(logical=False) or 0}, f, indent=2)
         print(f"[config] created default {CONFIG_PATH} "
               f"(cores={psutil.cpu_count(logical=False) or '?'} → YOLO={N_YOLO} OCR={N_OCR})")
@@ -83,15 +98,130 @@ ready_queue = mp.Queue()
 
 pending_requests = {}
 request_lock = threading.Lock()
+partial_results = {}
+partial_lock = threading.Lock()
 request_counter = 0
 round_robin_idx = 0
 ready_count = 0
 ready_count_lock = threading.Lock()
 _shutdown = threading.Event()
+YOLO_SHUTDOWN_TIMEOUT = 5.0
+OCR_SHUTDOWN_TIMEOUT = 15.0
 
 # ── 最近识别结果 ring buffer（供 GUI 拉取）──────────────────────
 from collections import deque
 _recent_results: "deque[dict]" = deque(maxlen=20)
+
+
+def _assign_prompt_globally(rows: list[dict], prompt: list[str]) -> list[dict]:
+    if len(rows) != len(prompt):
+        return rows
+
+    best_perm, best_score = None, -float("inf")
+
+    def permutations(items):
+        if len(items) <= 1:
+            yield tuple(items)
+            return
+        for idx, item in enumerate(items):
+            for suffix in permutations(items[:idx] + items[idx + 1 :]):
+                yield (item,) + suffix
+
+    for perm in permutations(list(prompt)):
+        score = 0.0
+        for row, char in zip(rows, perm):
+            score += math.log(
+                max(float((row.get("candidate_scores") or {}).get(char, 0.0) or 0.0), 1e-12)
+            )
+        if score > best_score:
+            best_score, best_perm = score, perm
+
+    if best_perm is None:
+        return rows
+
+    assigned = []
+    for row, char in zip(rows, best_perm):
+        updated = dict(row)
+        updated["raw_char"] = updated.get("char", "")
+        updated["char"] = char
+        updated["score"] = float(
+            (updated.get("candidate_scores") or {}).get(char, updated.get("score", 0.0)) or 0.0
+        )
+        assigned.append(updated)
+    return assigned
+
+
+def _combine_ocr_partials(parts: list[dict]) -> dict:
+    parts = sorted(parts, key=lambda item: int(item.get("crop_index", 0)))
+    first = parts[0]
+    prompt = list(first.get("prompt") or [])
+    rows = [dict(part.get("row") or {}) for part in parts]
+    if prompt and len(rows) == len(prompt):
+        rows = _assign_prompt_globally(rows, prompt)
+
+    raw_box_chars = [str(row.get("char", "")) for row in rows]
+    box_chars = list(raw_box_chars)
+    if len(box_chars) == len(prompt):
+        used, mapping = set(), []
+        for ch in prompt:
+            for i, bc in enumerate(box_chars):
+                if i not in used and bc == ch:
+                    mapping.append(i)
+                    used.add(i)
+                    break
+            else:
+                mapping.append(-1)
+        prompt_to_box = mapping if -1 not in mapping else list(range(len(box_chars)))
+    else:
+        prompt_to_box = list(range(len(box_chars)))
+
+    img_w, img_h = first.get("image_size") or [1, 1]
+    boxes = first.get("boxes") or []
+    click_coords = []
+    for pi, bi in enumerate(prompt_to_box):
+        if bi >= len(boxes):
+            continue
+        b = boxes[bi]
+        click_coords.append(
+            {
+                "char": prompt[pi] if pi < len(prompt) else "",
+                "nx": round(((b[0] + b[2]) / 2) / img_w, 4),
+                "ny": round(((b[1] + b[3]) / 2) / img_h, 4),
+            }
+        )
+
+    scores = [float(part.get("row_ocr_ms", 0.0) or 0.0) for part in parts]
+    yolo_ms = float(first.get("yolo_ms", 0.0) or 0.0)
+    ocr_ms = max(scores) if scores else 0.0
+    return {
+        "req_id": first.get("req_id"),
+        "success": True,
+        "prompt": prompt,
+        "pred_text": "".join(box_chars),
+        "confidence": round(
+            sum(float((row.get("score", 0.0) or 0.0)) for row in rows) / max(len(rows), 1),
+            3,
+        ),
+        "elapsed_ms": round(ocr_ms + yolo_ms, 1),
+        "yolo_ms": round(yolo_ms, 1),
+        "ocr_ms": round(ocr_ms, 1),
+        "click_coords": click_coords,
+        "reason": first.get("reason", ""),
+    }
+
+
+def _consume_ocr_partial(res: dict) -> dict | None:
+    req_id = res.get("req_id")
+    total = int(res.get("crop_total", 1) or 1)
+    with request_lock:
+        bucket = partial_results.setdefault(req_id, [])
+        bucket.append(res)
+        if len(bucket) < total:
+            return None
+        parts = partial_results.pop(req_id, [])
+    if not parts:
+        return None
+    return _combine_ocr_partials(parts)
 
 
 @asynccontextmanager
@@ -129,11 +259,15 @@ async def lifespan(app: FastAPI):
     def _start_workers():
         print(f"[architect] 启动 {N_YOLO} YOLO 流水线 (Core 0-{N_YOLO - 1})...")
         for i in range(N_YOLO):
+            if _shutdown.is_set():
+                return
             _start_one(run_yolo_worker, (i, yolo_req_queues[i], ocr_req_queue, ready_queue))
             time.sleep(0.1)
 
         print(f"[architect] 启动 {N_OCR} OCR 流水线 (Core {N_YOLO}-{N_YOLO + N_OCR - 1}, 错峰加载)...")
         for i in range(N_OCR):
+            if _shutdown.is_set():
+                return
             core_id = N_YOLO + i
             p = _start_one(run_ocr_worker_direct, (core_id, ocr_req_queue, res_queue, ready_queue))
             time.sleep(1.0)  # OCR 模型大，间隔 1s 避免内存尖峰
@@ -161,7 +295,8 @@ async def lifespan(app: FastAPI):
                     workers_list[idx] = new_p
                     break
 
-    threading.Thread(target=_start_workers, daemon=True).start()
+    startup_thread = threading.Thread(target=_start_workers, daemon=True)
+    startup_thread.start()
     threading.Thread(target=result_listener_thread, daemon=True).start()
     threading.Thread(target=ready_count_tracker, daemon=True).start()
     threading.Thread(target=_worker_watchdog, daemon=True).start()
@@ -169,11 +304,41 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         _shutdown.set()
-        for p in workers_list:
-            if p.is_alive():
-                p.terminate()
-                p.join(timeout=3)
+        startup_thread.join(timeout=2)
+
+        # Paddle 在 macOS 上收到 SIGTERM 时可能在其原生信号处理器中崩溃。
+        # 先用队列哨兵让 YOLO 正常停机，确保它们不再产生 OCR 任务；
+        # 再停止 OCR。超时进程直接 SIGKILL，避免触发 Paddle 的 SIGTERM 路径。
+        _stop_workers(
+            list(workers_list[:N_YOLO]),
+            list(workers_list[N_YOLO:]),
+            yolo_req_queues,
+            ocr_req_queue,
+        )
         print("[architect] all workers stopped")
+
+
+def _stop_workers(yolo_workers, ocr_workers, yolo_queues, ocr_queue) -> None:
+    """按流水线顺序正常停止 worker，避免向 Paddle 发送 SIGTERM。"""
+    for index, process in enumerate(yolo_workers):
+        if process.is_alive():
+            yolo_queues[index].put(None)
+    _join_workers(yolo_workers, YOLO_SHUTDOWN_TIMEOUT)
+
+    for _ in ocr_workers:
+        ocr_queue.put(None)
+    _join_workers(ocr_workers, OCR_SHUTDOWN_TIMEOUT)
+
+
+def _join_workers(processes, timeout: float) -> None:
+    """等待 worker 正常退出，并强制清理超过统一截止时间的进程。"""
+    deadline = time.monotonic() + timeout
+    for process in processes:
+        process.join(timeout=max(0.0, deadline - time.monotonic()))
+    for process in processes:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=1)
 
 
 def result_listener_thread():
@@ -182,6 +347,10 @@ def result_listener_thread():
         res = res_queue.get()
         if not res:
             continue
+        if res.get("partial"):
+            res = _consume_ocr_partial(res)
+            if res is None:
+                continue
         req_id = res.get("req_id")
         with request_lock:
             future = pending_requests.pop(req_id, None)
@@ -205,6 +374,15 @@ def result_listener_thread():
                 "req_id": req_id,
             }
         _recent_results.append(snapshot)
+        # 打印识别摘要到 stdout（GUI 日志框 / 控制台可见）
+        if res.get("success"):
+            p = "".join(res.get("prompt", []))
+            pred = res.get("pred_text", "")
+            print(f"[captcha] {''.join(p)} -> {pred} | conf={res.get('confidence', 0):.2f} "
+                  f"total={res.get('elapsed_ms', 0):.0f}ms yolo={res.get('yolo_ms', 0):.0f}ms "
+                  f"ocr={res.get('ocr_ms', 0):.0f}ms | req={req_id}", flush=True)
+        else:
+            print(f"[captcha] FAIL req={req_id}: {res.get('error', 'unknown')}", flush=True)
         if future and not future.done():
             future.get_loop().call_soon_threadsafe(future.set_result, res)
 
@@ -254,6 +432,7 @@ async def health():
         "alive_workers": alive,
         "n_yolo": N_YOLO,
         "n_ocr": N_OCR,
+        "ocr_model": OCR_MODEL,
         "port": PORT,
     }
 
@@ -303,6 +482,7 @@ async def handle_direct(data: CaptchaRequest):
     except asyncio.TimeoutError:
         with request_lock:
             pending_requests.pop(req_id, None)
+            partial_results.pop(req_id, None)
         raise HTTPException(status_code=504, detail="Processing timeout")
 
 
@@ -349,6 +529,7 @@ async def handle_direct_url(data: CaptchaUrlRequest):
     except asyncio.TimeoutError:
         with request_lock:
             pending_requests.pop(req_id, None)
+            partial_results.pop(req_id, None)
         raise HTTPException(status_code=504, detail="Processing timeout")
 
 
@@ -410,6 +591,7 @@ async def handle_batch_direct(data: BatchCaptchaRequest):
         with request_lock:
             for req_id in futures:
                 pending_requests.pop(req_id, None)
+                partial_results.pop(req_id, None)
         raise HTTPException(status_code=504, detail="Batch processing timeout")
 
     # 收集结果，保持原始顺序
@@ -426,7 +608,7 @@ async def handle_batch_direct(data: BatchCaptchaRequest):
 
 def main():
     mp.freeze_support()
-    uvicorn.run("backend.server:app", host="0.0.0.0", port=PORT, log_level="info")
+    uvicorn.run("backend.server:app", host=HOST, port=PORT, log_level="info")
 
 
 if __name__ == "__main__":

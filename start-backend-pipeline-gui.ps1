@@ -1,4 +1,4 @@
-# GLM Coding Helper - Pipeline Backend GUI Launcher
+﻿# GLM Coding Helper - Pipeline Backend GUI Launcher
 # Usage: powershell -File start-backend-pipeline-gui.ps1
 
 $ErrorActionPreference = "Continue"
@@ -22,6 +22,38 @@ function Test-PythonImports {
     }
 }
 
+function Test-ForeignVenv {
+    param(
+        [string]$PythonPath
+    )
+    if (-not $PythonPath -or -not (Test-Path $PythonPath)) { return $false }
+    $venvDir = Split-Path -Parent (Split-Path -Parent $PythonPath)
+    $cfg = Join-Path $venvDir "pyvenv.cfg"
+    if (-not (Test-Path $cfg)) { return $true }
+    try {
+        $text = Get-Content -LiteralPath $cfg -Raw -Encoding UTF8
+    } catch {
+        return $true
+    }
+    foreach ($line in ($text -split "`r?`n")) {
+        if ($line -match '^(executable|command)\s*=\s*(.+)$') {
+            $value = $Matches[2].Trim()
+            if ($value -match 'C:\\Users\\17336\\') { return $true }
+            if ($line -match '^executable\s*=' -and -not (Test-Path $value)) { return $true }
+        }
+        if ($line -match '^command\s*=.*\s-m\s+venv\s+(.+)$') {
+            $createdAt = $Matches[1].Trim().Trim('"')
+            try {
+                $expected = (Resolve-Path -LiteralPath $venvDir -ErrorAction Stop).Path
+                if ([IO.Path]::GetFullPath($createdAt).TrimEnd('\') -ne $expected.TrimEnd('\')) { return $true }
+            } catch {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 $GuiImportCode = "import fastapi, uvicorn, psutil, tkinter"
 $VenvCandidates = @(
     "$Root\.venv_paddle_gpu\Scripts\python.exe",
@@ -31,21 +63,22 @@ $VenvCandidates = @(
 
 $Python = $null
 foreach ($candidate in $VenvCandidates) {
-    if (Test-PythonImports $candidate $GuiImportCode) {
+    if ((-not (Test-ForeignVenv $candidate)) -and (Test-PythonImports $candidate $GuiImportCode)) {
         $Python = $candidate
         break
     }
 }
 if (-not $Python) {
     foreach ($candidate in $VenvCandidates) {
-        if (Test-Path $candidate) {
+        if ((Test-Path $candidate) -and (-not (Test-ForeignVenv $candidate))) {
             $Python = $candidate
             break
         }
     }
 }
 if (-not $Python) {
-    Write-Host "[FAIL] No Python venv found. Run one-click-start.cmd first." -ForegroundColor Red
+    Write-Host "[FAIL] No usable local Python venv found. Run one-click-start.cmd first." -ForegroundColor Red
+    Write-Host "       If this came from a portable zip, the bundled venv may have been created on another machine and must be rebuilt locally." -ForegroundColor Yellow
     Read-Host "Press Enter to exit"
     exit 1
 }

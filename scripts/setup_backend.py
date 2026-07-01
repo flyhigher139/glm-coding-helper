@@ -94,7 +94,7 @@ def smoke_test(py: Path, mode: str) -> None:
                 f"os.environ['PADDLE_PDX_CACHE_HOME'] = {str(ROOT / '.paddlex_cache_gpu')!r}; "
                 "os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True'); "
                 "from paddleocr import TextRecognition; "
-                "r = TextRecognition(model_name='PP-OCRv5_server_rec', device='gpu:0', engine='paddle_dynamic'); "
+                "r = TextRecognition(model_name='PP-OCRv6_tiny_rec', device='gpu:0', engine='paddle_dynamic'); "
                 "close = getattr(r, 'close', None); "
                 "close() if callable(close) else None; "
                 "print('gpu ocr ok')"
@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         "--pip-arg",
         action="append",
         default=[],
-        help="Extra argument appended to pip install, repeatable. Example: --pip-arg -i --pip-arg https://pypi.tuna.tsinghua.edu.cn/simple",
+        help="Extra argument appended to pip install, repeatable. Use the --pip-arg=VALUE form when VALUE starts with a dash (e.g. --pip-arg=-i).",
     )
     args = parser.parse_args(argv)
 
@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n=== Setting up {mode.upper()} backend environment ===", flush=True)
         py = create_venv(venv, args.recreate)
         if not args.skip_install:
-            run([str(py), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
+            run([str(py), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel", *args.pip_arg])
             install_requirements(py, req, args.pip_arg)
         if not args.no_smoke_test:
             smoke_test(py, mode)

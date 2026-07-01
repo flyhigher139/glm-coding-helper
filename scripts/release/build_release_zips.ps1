@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputDir = "dist",
     [switch]$SkipPortableCpu
 )
@@ -50,15 +50,18 @@ function New-Zip {
         & $sevenZipA.Source a -tzip $ZipPath $PackageDir | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "7za failed with exit code $LASTEXITCODE" }
     } else {
-        $parent = Split-Path -Parent $PackageDir
-        $leaf = Split-Path -Leaf $PackageDir
-        Push-Location $parent
-        try {
-            tar -a -cf (Split-Path -Leaf $ZipPath) $leaf
-            if ($LASTEXITCODE -ne 0) { throw "tar zip failed with exit code $LASTEXITCODE" }
-        } finally {
-            Pop-Location
-        }
+        # 用 Python zipfile 打包（最可靠，无 Windows MAX_PATH 限制）
+        # Compress-Archive 对长路径/中文路径易失败，Windows bsdtar 的 -a 对 .zip 扩展名识别有 bug
+        $py = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $py) { $py = Get-Command python3 -ErrorAction SilentlyContinue }
+        if (-not $py) { throw "Neither 7z nor python found; cannot create zip" }
+        $env:_ZIP_OUT = $ZipPath
+        $env:_ZIP_SRC = $PackageDir
+        # 打包时强制 .sh/.command 为 LF 行尾（Windows checkout 可能转成 CRLF，导致 macOS/Linux /bin/bash^M）
+        python -c "import os,zipfile;zo=os.environ['_ZIP_OUT'];zs=os.environ['_ZIP_SRC'];z=zipfile.ZipFile(zo,'w',zipfile.ZIP_DEFLATED);[z.writestr(os.path.relpath(os.path.join(r,f),zs), open(os.path.join(r,f),'rb').read().replace(b'\r\n',b'\n')) if f.lower().endswith(('.sh','.command')) else z.write(os.path.join(r,f),os.path.relpath(os.path.join(r,f),zs)) for r,_,fs in os.walk(zs) for f in fs];z.close()"
+        if ($LASTEXITCODE -ne 0) { throw "python zipfile failed with exit code $LASTEXITCODE" }
+        if (-not (Test-Path $ZipPath)) { throw "python failed to create $ZipPath" }
+        Remove-Item Env:_ZIP_OUT, Env:_ZIP_SRC -ErrorAction SilentlyContinue
     }
     $zipSize = (Get-Item $ZipPath).Length
     Write-Host ("Created {0} ({1:N1} MB)" -f $ZipPath, ($zipSize / 1MB))
@@ -72,14 +75,16 @@ $CommonItems = @(
     "glm-coding-helper.user.js",
     "scripts\userscripts\glm-coding-captcha-direct.user.js",
     "one-click-start.cmd",
-    "start-backend-pipeline-gui.cmd",
-    "start-backend-pipeline-gui.ps1",
+    "one-click-start.command",
+    "one-click-start.sh",
+    "start-backend-pipeline-gui.command",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
     "requirements-backend-cpu.txt",
     "requirements-backend-gpu.txt",
     "scripts",
+    "docs",
     "models",
     "backend"
 )
@@ -99,19 +104,29 @@ $OnlineGuide = @"
 GLM Coding Helper online installer package
 
 Recommended:
-1. Extract this package to a short path, for example C:\glm-coding-helper.
+1. Extract this package to a short path, for example C:\glm-coding-helper or ~/glm-coding-helper.
 2. Install or update Tampermonkey script from glm-coding-helper.user.js.
-3. Double-click one-click-start.cmd.
-4. It will install CPU/GPU backend dependencies automatically when missing, then start the backend.
+3. Start the backend:
+   - Windows: double-click one-click-start.cmd
+   - macOS: chmod +x one-click-start.command && ./one-click-start.command
+   - Linux: chmod +x one-click-start.sh && ./one-click-start.sh
+4. Missing CPU/GPU backend dependencies are installed automatically on first run.
 
 Important:
 - Avoid very deep extract paths. Some backend dependencies contain long internal paths.
 - If pip reports "No such file or directory" during install, move the folder to a short path like C:\glm-coding-helper and retry.
 
 Manual:
-- one-click-start.cmd installs the CPU backend environment on first run.
+- one-click-start.cmd installs the CPU/GPU backend environment on first run.
 - start-backend-pipeline-gui.cmd launches the pipeline backend with a Tk GUI window.
 - scripts\start_backend.ps1 starts the backend after environment exists.
+- macOS: run chmod +x one-click-start.command start-backend-pipeline-gui.command scripts/setup_backend_macos.sh if Finder blocks the scripts, then double-click one-click-start.command for first setup.
+- Linux: extract to a normal folder, then run:
+    chmod +x one-click-start.sh scripts/setup_backend_linux.sh
+    ./one-click-start.sh
+  First run auto-detects PyPI mirrors (China mirrors first), creates .venv_paddle / .venv_paddle_gpu as needed, and starts the headless captcha_server backend (start_backend.py --headless) on http://127.0.0.1:8888 .
+  Requires Python 3.12 or uv; NVIDIA GPU is optional (auto mode tries GPU first, then falls back to CPU).
+  Full guide: docs/linux-setup.md
 "@
 Set-Content -LiteralPath (Join-Path $OnlineDir "ONLINE_INSTALLER_README.txt") -Value $OnlineGuide -Encoding UTF8
 New-Zip -PackageDir $OnlineDir -ZipPath (Join-Path $OutRoot "$OnlineName.zip")
